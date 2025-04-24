@@ -35,7 +35,7 @@ class LLMChain:
         """
         try:
             if not query:
-                return "I didn't receive a question. How can I help you with your documents?"
+                return "I didn't receive a question. How can I help you?"
             
             # Format conversation context for Ollama
             messages = []
@@ -55,7 +55,7 @@ class LLMChain:
             })
             
             # If no previous context, simplify to direct prompt
-            if not messages[:-1]:
+            if len(messages) <= 1:
                 return self._generate_with_ollama_completion(query)
             else:
                 return self._generate_with_ollama_chat(messages)

@@ -1,0 +1,16 @@
+app/ui/
+├── __init__.py
+├── streamlit_app.py     # Main file (simplified)
+├── tabs/
+│   ├── __init__.py
+│   ├── chat_tab.py
+│   ├── documents_tab.py
+│   ├── general_knowledge_tab.py
+│   ├── logs_tab.py
+│   ├── settings_tab.py
+│   └── status_tab.py
+└── utils/
+    ├── __init__.py
+    ├── components.py    # Component initialization
+    ├── conversation.py  # Conversation management
+    └── sidebar.py       # Sidebar functionality
