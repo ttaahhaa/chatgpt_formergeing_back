@@ -20,8 +20,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 # Import tab modules
-from app.ui.tabs.chat_tab import chat_tab
-from app.ui.tabs.general_knowledge_tab import general_knowledge_tab
+from app.ui.tabs.unified_chat_tab import unified_chat_tab
 from app.ui.tabs.documents_tab import documents_tab
 from app.ui.tabs.settings_tab import settings_tab
 from app.ui.tabs.logs_tab import logs_tab
@@ -32,27 +31,24 @@ from app.ui.utils.sidebar import sidebar
 
 def main():
     """Main application entry point"""
-    # Create tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "Chat", "General Knowledge", "Documents", "Settings", "Logs", "Status"
+    # Create tabs - now with a unified chat tab
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Chat", "Documents", "Settings", "Logs", "Status"
     ])
     
     with tab1:
-        chat_tab()
+        unified_chat_tab()
     
     with tab2:
-        general_knowledge_tab()
-    
-    with tab3:
         documents_tab()
     
-    with tab4:
+    with tab3:
         settings_tab()
     
-    with tab5:
+    with tab4:
         logs_tab()
     
-    with tab6:
+    with tab5:
         status_tab()
     
     # Add sidebar
