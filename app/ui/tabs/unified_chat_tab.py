@@ -189,15 +189,13 @@ def unified_chat_tab():
                 
                 # Simulate typing with improved animation
                 message_placeholder.markdown('<div class="assistant-response typing">', unsafe_allow_html=True)
-                
+
                 for i in range(len(response)):
                     full_response += response[i]
                     if i % 5 == 0:  # Update every few characters for performance
                         time.sleep(0.005)
-                        message_placeholder.markdown(
-                            f'<div class="assistant-response typing">{full_response}▌</div>', 
-                            unsafe_allow_html=True
-                        )
+                        # Use plain text update without the cursor character that could break HTML
+                        message_placeholder.write(full_response)
                 
                 # Add sources if available with modern styling
                 if sources:
@@ -225,10 +223,6 @@ def unified_chat_tab():
                     
                     source_text += '</ul></div>'
                     full_response += source_text
-                
-                # For general knowledge, add disclaimer with styling
-                if not sources and use_general:
-                    full_response += '<div class="disclaimer">This response is based on the assistant\'s general knowledge, not your documents.</div>'
                 
                 # Display final response with proper styling
                 message_placeholder.markdown(
