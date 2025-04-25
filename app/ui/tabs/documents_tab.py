@@ -22,26 +22,45 @@ def documents_tab():
     </div>
     """, unsafe_allow_html=True)
     
-    # Document statistics card
+    # Initialize show_confirm_delete in session state if it doesn't exist
+    if 'show_confirm_delete' not in st.session_state:
+        st.session_state.show_confirm_delete = False
+        
+    # Document statistics with improved design
     documents = components["vector_store"].get_documents()
     doc_count = len(documents)
+    total_chars = sum(len(doc.get('content', '')) for doc in documents)
+    total_words = sum(len(doc.get('content', '').split()) for doc in documents)
     
-    st.markdown(f"""
-    <div class="stats-card">
-        <div class="stat-item">
-            <div class="stat-value">{doc_count}</div>
-            <div class="stat-label">Documents</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-value">{sum(len(doc.get('content', '')) for doc in documents)}</div>
-            <div class="stat-label">Total Characters</div>
-        </div>
-        <div class="stat-item">
-            <div class="stat-value">{sum(len(doc.get('content', '').split()) for doc in documents)}</div>
-            <div class="stat-label">Total Words</div>
+    # Modern dashboard-style statistics with improved visualization
+    # Create a modern dashboard for document statistics
+    # Use classes that are already defined in custom.css
+    dashboard_html = f"""
+    <div class="stCard">
+        <div class="stats-dashboard" style="display: flex; justify-content: space-between;">
+            <div class="stat-item" style="flex: 1; text-align: center; padding: 10px; position: relative;">
+                <div style="font-size: 24px; margin-bottom: 8px; color: var(--primary-color);">📄</div>
+                <div style="font-size: 32px; font-weight: 700; color: var(--primary-color);">{doc_count}</div>
+                <div style="font-size: 14px; color: #666; margin-top: 5px;">Documents</div>
+            </div>
+            <div style="width: 1px; background-color: #e5e5e5; margin: 15px 0;"></div>
+            <div class="stat-item" style="flex: 1; text-align: center; padding: 10px; position: relative;">
+                <div style="font-size: 24px; margin-bottom: 8px; color: var(--primary-color);">🔤</div>
+                <div style="font-size: 32px; font-weight: 700; color: var(--primary-color);">{total_chars}</div>
+                <div style="font-size: 14px; color: #666; margin-top: 5px;">Total Characters</div>
+            </div>
+            <div style="width: 1px; background-color: #e5e5e5; margin: 15px 0;"></div>
+            <div class="stat-item" style="flex: 1; text-align: center; padding: 10px; position: relative;">
+                <div style="font-size: 24px; margin-bottom: 8px; color: var(--primary-color);">📝</div>
+                <div style="font-size: 32px; font-weight: 700; color: var(--primary-color);">{total_words}</div>
+                <div style="font-size: 14px; color: #666; margin-top: 5px;">Total Words</div>
+            </div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    
+    # Display the dashboard
+    st.markdown(dashboard_html, unsafe_allow_html=True)
     
     # Upload section with modern UI
     st.markdown("""
@@ -207,22 +226,29 @@ def documents_tab():
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("🗑️ Clear All Documents", use_container_width=True):
-                # Create a confirmation dialog
+            if st.button("🗑️ Clear All Documents", key="clear_all_docs_button", use_container_width=True):
+                # Store in session state that we want to show confirmation
+                st.session_state.show_confirm_delete = True
+            
+            # Show confirmation dialog if triggered
+            if st.session_state.get('show_confirm_delete', False):
                 st.warning("Are you sure you want to remove all documents? This cannot be undone.")
                 confirm_col1, confirm_col2 = st.columns(2)
                 with confirm_col1:
-                    if st.button("✅ Yes, remove all", key="confirm_remove_all"):
+                    if st.button("✅ Yes, remove all", key="confirm_clear_docs"):
                         try:
                             components["vector_store"].clear()
+                            components["vector_store"].save()  # Make sure to save after clearing
+                            st.session_state.show_confirm_delete = False
                             st.success("All documents removed successfully")
+                            time.sleep(1)  # Short pause for better UX
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error removing documents: {str(e)}")
                 with confirm_col2:
-                    if st.button("❌ Cancel", key="cancel_remove_all"):
+                    if st.button("❌ Cancel", key="cancel_clear_docs"):
+                        st.session_state.show_confirm_delete = False
                         st.rerun()
-    
         
         with col2:
             if st.button("🔄 Refresh Document List", use_container_width=True):
