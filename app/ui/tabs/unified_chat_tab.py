@@ -1,6 +1,6 @@
 """
-Unified Chat tab for Document QA Assistant.
-Combines document-based QA and general knowledge capabilities.
+Modernized Unified Chat tab for Document QA Assistant.
+Combines document-based QA and general knowledge capabilities with improved UI.
 """
 
 import streamlit as st
@@ -11,48 +11,77 @@ from app.ui.utils.components import init_components
 from app.ui.utils.conversation import init_chat_history, save_message
 
 def unified_chat_tab():
-    """Unified interface that combines document-based QA and general knowledge"""
+    """Unified interface that combines document-based QA and general knowledge with modern UI"""
     # Initialize components
     components = init_components()
     
     # Initialize chat history
     init_chat_history()
     
-    st.header("Chat Assistant")
-    st.markdown(
-        """
-        Ask questions about your documents or any general knowledge questions.
-        The system will automatically use your documents when relevant, or fall back
-        to general knowledge when needed.
-        """
-    )
+
     
-    # Display mode selection (optional)
+    st.markdown("""
+    <div class="chat-header">
+        <h2>💬 MOI Chat Assistant</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    
+    # Mode selection with modern UI
+    st.markdown('<div class="mode-selector">', unsafe_allow_html=True)
     mode = st.radio(
         "Knowledge Source:",
         ["Auto (Recommended)", "Documents Only", "General Knowledge Only"],
-        horizontal=True
+        horizontal=True,
+        key="knowledge_mode"
     )
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    # Show current mode explanation
+    # Show current mode explanation with styled info box
     if mode == "Auto (Recommended)":
-        st.info("The system will try to answer using your documents first, then fall back to general knowledge if needed.")
+        st.markdown("""
+        <div class="info-box auto-mode">
+            <div class="info-icon">ℹ️</div>
+            <div class="info-content">
+                The system will try to answer using your documents first, then fall back to general knowledge if needed.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     elif mode == "Documents Only":
-        st.info("The system will only use your uploaded documents to answer questions.")
+        st.markdown("""
+        <div class="info-box doc-mode">
+            <div class="info-icon">📄</div>
+            <div class="info-content">
+                The system will only use your uploaded documents to answer questions.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     else:  # General Knowledge Only
-        st.info("The system will use its built-in knowledge without referring to your documents.")
+        st.markdown("""
+        <div class="info-box general-mode">
+            <div class="info-icon">🧠</div>
+            <div class="info-content">
+                The system will use its built-in knowledge without referring to your documents.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Display chat history
+    # Chat container with modern styling
+    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+    
+    # Display chat history with modern styling
     for message in st.session_state.chat_history:
         if message["role"] == "user":
-            st.chat_message("user").write(message["content"])
+            st.chat_message("user", avatar="👤").write(message["content"])
         else:
-            st.chat_message("assistant").write(message["content"])
+            st.chat_message("assistant", avatar="🤖").write(message["content"])
     
-    # Chat input
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Chat input with modern styling
     if prompt := st.chat_input("Ask a question..."):
         # Display user message
-        st.chat_message("user").write(prompt)
+        st.chat_message("user", avatar="👤").write(prompt)
         
         # Save user message
         save_message("user", prompt)
@@ -61,12 +90,18 @@ def unified_chat_tab():
         llm_chain = components["llm_chain"]
         vector_store = components["vector_store"]
         
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar="🤖"):
             message_placeholder = st.empty()
             full_response = ""
             
-            # Simulate stream of response with a cursor
-            message_placeholder.markdown("▌")
+            # Show typing indicator
+            message_placeholder.markdown("""
+            <div class="typing-indicator">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+            </div>
+            """, unsafe_allow_html=True)
             time.sleep(0.5)
             
             try:
@@ -97,7 +132,12 @@ def unified_chat_tab():
                         sources = response_data["sources"]
                     elif use_general:
                         # No relevant documents found, use general knowledge
-                        message_placeholder.markdown("No relevant documents found. Using general knowledge...")
+                        message_placeholder.markdown("""
+                        <div class="notification">
+                            <div class="notification-icon">🔍</div>
+                            <div class="notification-content">No relevant documents found. Using general knowledge...</div>
+                        </div>
+                        """, unsafe_allow_html=True)
                         time.sleep(1)
                         
                         # Prepare conversation context for general knowledge
@@ -147,30 +187,54 @@ def unified_chat_tab():
                     response = "Document-only mode is selected, but no documents are uploaded or found relevant. " \
                               "Please upload documents or change the mode to allow general knowledge answers."
                 
-                # Simulate typing
+                # Simulate typing with improved animation
+                message_placeholder.markdown('<div class="assistant-response typing">', unsafe_allow_html=True)
+                
                 for i in range(len(response)):
                     full_response += response[i]
-                    if i % 3 == 0:  # Update every few characters for performance
+                    if i % 5 == 0:  # Update every few characters for performance
                         time.sleep(0.005)
-                        # Add a blinking cursor to simulate typing
-                        message_placeholder.markdown(full_response + "▌")
+                        message_placeholder.markdown(
+                            f'<div class="assistant-response typing">{full_response}▌</div>', 
+                            unsafe_allow_html=True
+                        )
                 
-                # Add sources if available
+                # Add sources if available with modern styling
                 if sources:
-                    source_text = "\n\n**Sources:**\n"
+                    source_text = '<div class="sources-section">'
+                    source_text += '<h4>Sources:</h4><ul class="sources-list">'
+                    
                     for i, source in enumerate(sources):
                         doc_name = source.get("document", f"Document {i+1}")
                         relevance = source.get("relevance", 0.0)
                         relevance_percent = int(relevance * 100)
-                        source_text += f"- {doc_name} (Relevance: {relevance_percent}%)\n"
+                        
+                        # Style based on relevance
+                        if relevance_percent > 70:
+                            relevance_class = "high-relevance"
+                        elif relevance_percent > 40:
+                            relevance_class = "medium-relevance"
+                        else:
+                            relevance_class = "low-relevance"
+                            
+                        source_text += f'<li class="{relevance_class}">'
+                        source_text += f'<span class="doc-name">{doc_name}</span>'
+                        source_text += f'<span class="relevance-meter" style="width:{relevance_percent}%"></span>'
+                        source_text += f'<span class="relevance-percent">{relevance_percent}%</span>'
+                        source_text += '</li>'
                     
+                    source_text += '</ul></div>'
                     full_response += source_text
                 
-                # For general knowledge, add disclaimer
+                # For general knowledge, add disclaimer with styling
                 if not sources and use_general:
-                    full_response += "\n\n_This response is based on the assistant's general knowledge, not your documents._"
+                    full_response += '<div class="disclaimer">This response is based on the assistant\'s general knowledge, not your documents.</div>'
                 
-                message_placeholder.markdown(full_response)
+                # Display final response with proper styling
+                message_placeholder.markdown(
+                    f'<div class="assistant-response">{full_response}</div>', 
+                    unsafe_allow_html=True
+                )
                 
                 # Save assistant message
                 save_message("assistant", full_response)
@@ -183,14 +247,13 @@ def unified_chat_tab():
                 st.session_state.conversation_context.append({"role": "assistant", "content": response})
                 
             except Exception as e:
-                error_message = f"Error: {str(e)}"
-                message_placeholder.markdown(error_message)
+                error_message = f"""
+                <div class="error-message">
+                    <div class="error-icon">⚠️</div>
+                    <div class="error-content">Error: {str(e)}</div>
+                </div>
+                """
+                message_placeholder.markdown(error_message, unsafe_allow_html=True)
                 # Save error message
-                save_message("assistant", error_message)
+                save_message("assistant", f"Error: {str(e)}")
     
-    # Add clear button
-    if st.button("Clear Chat History"):
-        st.session_state.chat_history = []
-        if 'conversation_context' in st.session_state:
-            st.session_state.conversation_context = []
-        st.rerun()

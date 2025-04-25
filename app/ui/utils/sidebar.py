@@ -1,75 +1,137 @@
 """
-Sidebar functionality for Document QA Assistant.
+Modern sidebar functionality for Document QA Assistant.
 """
 
 import streamlit as st
 from datetime import datetime
 
 from app.ui.utils.components import init_components
-from app.ui.utils.conversation import start_new_conversation, load_conversation
+from app.ui.utils.conversation import start_new_conversation, load_conversation, load_conversations
 
 def sidebar():
-    """Sidebar content"""
+    """Sidebar content with modern UI"""
     components = init_components()
     
-    st.sidebar.title("Document QA Assistant")
+    # Add all CSS styling in one place for sidebar adjustments
+    st.markdown("""
+    <style>
+    /* Sidebar width adjustment */
+    [data-testid="stSidebar"] {
+        width: 220px !important;
+    }
     
-    # Conversation management
-    st.sidebar.header("Conversations")
+    [data-testid="stSidebar"] > div:first-child {
+        width: 220px !important;
+    }
     
-    # New conversation button
-    if st.sidebar.button("➕ New Conversation"):
-        start_new_conversation()
-        st.rerun()
+    /* Main content adjustment */
+    .main .block-container {
+        padding-left: 20px;
+        padding-right: 20px;
+        max-width: calc(100% - 220px);
+    }
     
-    # Show saved conversations
-    if hasattr(st.session_state, 'conversations'):
-        if st.session_state.conversations:
-            # Sort conversations by last updated time (newest first)
-            sorted_convs = sorted(
-                st.session_state.conversations.items(),
-                key=lambda x: datetime.strptime(x[1]["last_updated"], "%Y-%m-%d %H:%M:%S") if isinstance(x[1]["last_updated"], str) else x[1]["last_updated"],
-                reverse=True
-            )
+    /* New conversation button styling */
+    .new-conversation-btn {
+        margin: 5px 0 15px 0 !important;
+    }
+    
+    .new-conversation-btn button {
+        background-color: #7267EF !important;
+        color: white !important;
+        font-weight: bold !important;
+        text-align: center !important;
+    }
+    
+    /* Custom conversation item styling */
+    .conversation-item {
+        padding: 4px 8px;
+        background-color: transparent;
+        border: none;
+        text-align: left;
+        color: #333;
+        font-weight: normal;
+        margin: 1px 0;
+        border-radius: 4px;
+        cursor: pointer;
+        width: 100%;
+        display: block;
+        line-height: 1.2;
+        font-size: 14px;
+    }
+    
+    /* Force text alignment for button content */
+    [data-testid="stButton"] > button > div {
+        text-align: left !important;
+        width: 100% !important;
+    }
+
+    /* Target even deeper if needed */
+    [data-testid="stButton"] > button > div > p {
+        text-align: left !important;
+    }
+                
+    .conversation-item:hover {
+        background-color: #f1f0fe;
+        border-left: 3px solid #7267EF;
+    }
+    
+    /* Section headers */
+    .sidebar-section-title {
+        font-weight: bold;
+        color: #7267EF;
+        margin-top: 16px;
+        margin-bottom: 6px;
+        font-size: 14px;
+        padding-left: 4px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Conversations section
+    st.sidebar.markdown("<div class='sidebar-section-title'>Conversations</div>", unsafe_allow_html=True)
+    
+    # New conversation button with custom class
+    with st.sidebar:
+        st.markdown('<div class="new-conversation-btn">', unsafe_allow_html=True)
+        if st.button("➕ New Conversation", use_container_width=True):
+            start_new_conversation()
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Make sure conversations are loaded
+    if 'conversations' not in st.session_state:
+        st.session_state.conversations = load_conversations()
+    
+    # Show saved conversations with list-style UI
+    if st.session_state.conversations:
+        # Sort conversations by last updated time (newest first)
+        sorted_convs = sorted(
+            st.session_state.conversations.items(),
+            key=lambda x: datetime.strptime(x[1]["last_updated"], "%Y-%m-%d %H:%M:%S") if isinstance(x[1]["last_updated"], str) else x[1]["last_updated"],
+            reverse=True
+        )
+        
+        # Get current conversation ID
+        current_conv_id = st.session_state.get('conversation_id', '')
+        
+        # Just use normal buttons with plain text - no HTML
+        for i, (conv_id, conv_data) in enumerate(sorted_convs):
+            preview = conv_data['preview']
+            # Truncate preview if too long
+            if len(preview) > 30:
+                preview = preview[:30] + "..."
             
-            # Prepare selectbox options
-            conv_ids = [conv_id for conv_id, _ in sorted_convs]
-            conv_labels = {
-                conv_id: f"{conv_data['preview']} ({conv_data['message_count']} messages, last updated: {conv_data['last_updated']})"
-                for conv_id, conv_data in sorted_convs
-            }
-            
-            # Selectbox for previous conversations
-            selected_conv_id = st.sidebar.selectbox(
-                "Previous conversations:",
-                options=conv_ids,
-                format_func=lambda cid: conv_labels[cid]
-            )
-            
-            # Button to load selected conversation
-            if st.sidebar.button("Load Selected Conversation"):
-                load_conversation(selected_conv_id)
+            if st.sidebar.button(
+                preview, 
+                key=f"conv_{conv_id}",
+                use_container_width=True
+            ):
+                load_conversation(conv_id)
                 st.rerun()
-        else:
-            st.sidebar.write("No previous conversations.")
-    
-    # Status indicators
-    st.sidebar.header("System Status")
-    
-    # Ollama status indicator
-    ollama_status = components["llm_chain"].check_ollama_status()
-    if ollama_status["status"] == "available":
-        st.sidebar.success("✅ Ollama")
     else:
-        st.sidebar.error("❌ Ollama")
-    
-    # ArabERT status indicator
-    arabert_status = components["embeddings"].check_model_status()
-    if arabert_status["status"] == "available":
-        st.sidebar.success("✅ ArabERT")
-    else:
-        st.sidebar.error("❌ ArabERT")
-    
-    # Document count
-    documents = components["vector_store"].get_documents()
-    st.sidebar.write(f"Documents: {len(documents)}")
+        st.sidebar.markdown("""
+        <div style="color: #666; font-size: 13px; padding: 5px 10px;">
+            No previous conversations.
+        </div>
+        """, unsafe_allow_html=True)

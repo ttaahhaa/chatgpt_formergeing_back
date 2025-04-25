@@ -1,0 +1,34 @@
+app/
+├── core/
+│   ├── __init__.py
+│   ├── document_loader.py
+│   ├── embeddings.py
+│   ├── llm.py
+│   └── vector_store.py
+├── ui/
+│   ├── __init__.py
+│   ├── streamlit_app.py
+│   ├── static/
+│   │   └── css/
+│   │       └── custom.css
+│   ├── .streamlit/
+│   │   └── config.toml
+│   ├── tabs/
+│   │   ├── __init__.py
+│   │   ├── chat_tab.py
+│   │   ├── documents_tab.py
+│   │   ├── general_knowledge_tab.py
+│   │   ├── logs_tab.py
+│   │   ├── settings_tab.py
+│   │   ├── status_tab.py
+│   │   └── unified_chat_tab.py
+│   └── utils/
+│       ├── __init__.py
+│       ├── components.py
+│       ├── conversation.py
+│       └── sidebar.py
+├── data/
+│   ├── cache/
+│   ├── conversations/
+│   └── vector_store/
+└── logs/
