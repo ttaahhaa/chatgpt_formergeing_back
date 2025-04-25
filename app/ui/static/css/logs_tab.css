@@ -1,0 +1,72 @@
+/* Simple Logs Tab CSS for Document QA Assistant */
+
+/* Section headers */
+.section-header h2 {
+    margin-bottom: 5px;
+    color: #333;
+}
+
+.section-header .section-desc {
+    color: #666;
+    font-size: 14px;
+    margin-bottom: 20px;
+}
+
+/* File information */
+.file-info {
+    background-color: #f8f9fa;
+    padding: 12px 15px;
+    border-radius: 8px;
+    margin-bottom: 15px;
+}
+
+.file-info-item {
+    margin-bottom: 5px;
+}
+
+/* Log card styling */
+.log-card {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    padding: 15px;
+    margin-bottom: 15px;
+}
+
+/* Log level indicators */
+.log-level {
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    display: inline-block;
+}
+
+.log-level.error {
+    background-color: rgba(255, 83, 112, 0.1);
+    color: #FF5370;
+}
+
+.log-level.warning {
+    background-color: rgba(255, 182, 77, 0.1);
+    color: #FFB64D;
+}
+
+.log-level.info {
+    background-color: rgba(4, 169, 245, 0.1);
+    color: #04a9f5;
+}
+
+.log-level.debug {
+    background-color: rgba(46, 216, 182, 0.1);
+    color: #2ed8b6;
+}
+
+/* Button styling - already handled by your main CSS */
+
+/* Empty state */
+.empty-state {
+    text-align: center;
+    padding: 30px;
+    color: #666;
+}

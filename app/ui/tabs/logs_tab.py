@@ -1,6 +1,6 @@
 """
-Modernized Logs tab for Document QA Assistant.
-Displays system logs for monitoring and debugging with improved UI.
+Simplified Logs tab for Document QA Assistant.
+Displays system logs with basic filtering and improved UI.
 """
 
 import os
@@ -9,7 +9,7 @@ from datetime import datetime
 import streamlit as st
 
 def logs_tab():
-    """Logs tab for system monitoring with modern UI"""
+    """Simplified logs tab for system monitoring with clean UI"""
     st.markdown("""
     <div class="section-header">
         <h2>📝 System Logs</h2>
@@ -17,96 +17,57 @@ def logs_tab():
     </div>
     """, unsafe_allow_html=True)
     
-    # Log stats cards
-    col1, col2, col3 = st.columns(3)
-    
     # Find log files
     log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "logs")
     log_files = glob.glob(os.path.join(log_dir, "*.log"))
     
     if not log_files:
-        st.markdown("""
-        <div class="empty-state">
-            <div class="empty-icon">📝</div>
-            <div class="empty-text">No log files found.</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.info("No log files found. Application logs will appear here once generated.")
         return
     
     # Sort log files by modification time (newest first)
     log_files = sorted(log_files, key=os.path.getmtime, reverse=True)
     
-    # Display log stats
+    # Log stats dashboard
+    col1, col2, col3 = st.columns(3)
+    
+    # Total number of log files
     with col1:
-        st.markdown(f"""
-        <div class="stat-card">
-            <div class="stat-value">{len(log_files)}</div>
-            <div class="stat-label">Log Files</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Log Files", len(log_files))
+    
+    # Last update time
+    newest_log = log_files[0]
+    newest_time = datetime.fromtimestamp(os.path.getmtime(newest_log))
+    time_diff = datetime.now() - newest_time
+    
+    if time_diff.days > 0:
+        time_str = f"{time_diff.days} days ago"
+    elif time_diff.seconds > 3600:
+        time_str = f"{time_diff.seconds // 3600} hours ago"
+    elif time_diff.seconds > 60:
+        time_str = f"{time_diff.seconds // 60} minutes ago"
+    else:
+        time_str = f"{time_diff.seconds} seconds ago"
     
     with col2:
-        # Get the newest log file
-        newest_log = log_files[0]
-        newest_time = datetime.fromtimestamp(os.path.getmtime(newest_log))
-        time_diff = datetime.now() - newest_time
-        
-        if time_diff.days > 0:
-            time_str = f"{time_diff.days} days ago"
-        elif time_diff.seconds > 3600:
-            time_str = f"{time_diff.seconds // 3600} hours ago"
-        elif time_diff.seconds > 60:
-            time_str = f"{time_diff.seconds // 60} minutes ago"
-        else:
-            time_str = f"{time_diff.seconds} seconds ago"
-        
-        st.markdown(f"""
-        <div class="stat-card">
-            <div class="stat-value">{time_str}</div>
-            <div class="stat-label">Last Log</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Last Update", time_str)
+    
+    # Total log size
+    total_size = sum(os.path.getsize(file) for file in log_files)
+    if total_size < 1024:
+        size_str = f"{total_size} B"
+    elif total_size < 1024 * 1024:
+        size_str = f"{total_size / 1024:.1f} KB"
+    else:
+        size_str = f"{total_size / (1024 * 1024):.1f} MB"
     
     with col3:
-        # Calculate total log size
-        total_size = sum(os.path.getsize(file) for file in log_files)
-        
-        # Format size
-        if total_size < 1024:
-            size_str = f"{total_size} B"
-        elif total_size < 1024 * 1024:
-            size_str = f"{total_size / 1024:.1f} KB"
-        else:
-            size_str = f"{total_size / (1024 * 1024):.1f} MB"
-        
-        st.markdown(f"""
-        <div class="stat-card">
-            <div class="stat-value">{size_str}</div>
-            <div class="stat-label">Total Size</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.metric("Total Size", size_str)
     
-    # Log filter and search
-    st.markdown("""
-    <div class="logs-section">
-        <h3>📋 Log Browser</h3>
-    </div>
-    """, unsafe_allow_html=True)
+    # Log viewer section
+    st.subheader("Log Viewer")
     
-    # Search and filters row
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        search_term = st.text_input("🔍 Search in logs", placeholder="Type to search...")
-    
-    with col2:
-        log_type = st.selectbox(
-            "Log Type",
-            options=["All", "Error", "Warning", "Info", "Debug"],
-            index=0
-        )
-    
-    # Create dropdown for selecting log file with better formatting
+    # Create dropdown for selecting log file
     log_options = []
     for log_file in log_files:
         filename = os.path.basename(log_file)
@@ -127,163 +88,195 @@ def logs_tab():
         })
     
     selected_log = st.selectbox(
-        "Select log file:",
+        "Select log file to view:",
         options=log_options,
         format_func=lambda x: x["display"]
     )
+    
+    # Simple search and filter
+    filter_col1, filter_col2 = st.columns([3, 1])
+    
+    with filter_col1:
+        search_term = st.text_input("🔍 Search in log", placeholder="Type to search...")
+    
+    with filter_col2:
+        log_level = st.multiselect(
+            "Log Levels",
+            options=["ERROR", "WARNING", "INFO", "DEBUG"],
+            default=["ERROR", "WARNING", "INFO", "DEBUG"]
+        )
     
     if selected_log:
         try:
             with open(selected_log["path"], 'r') as f:
                 log_content = f.read()
             
-            # Show file info with modern UI
-            file_size = os.path.getsize(selected_log["path"])
-            mod_time = datetime.fromtimestamp(os.path.getmtime(selected_log["path"]))
+            # File info
+            st.write(f"**File:** {os.path.basename(selected_log['path'])}")
+            st.write(f"**Size:** {os.path.getsize(selected_log['path'])} bytes")
+            st.write(f"**Modified:** {datetime.fromtimestamp(os.path.getmtime(selected_log['path']))}")
             
-            # Format the info card
-            st.markdown(f"""
-            <div class="file-info-card">
-                <div class="file-info-item">
-                    <div class="info-label">File:</div>
-                    <div class="info-value">{os.path.basename(selected_log["path"])}</div>
-                </div>
-                <div class="file-info-item">
-                    <div class="info-label">Size:</div>
-                    <div class="info-value">{file_size} bytes</div>
-                </div>
-                <div class="file-info-item">
-                    <div class="info-label">Modified:</div>
-                    <div class="info-value">{mod_time}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Filter content if search term provided
-            if search_term:
+            # Apply filters if provided
+            if search_term or log_level:
                 filtered_lines = []
                 for line in log_content.split('\n'):
-                    if search_term.lower() in line.lower():
+                    # Skip empty lines
+                    if not line.strip():
+                        continue
+                    
+                    # Check search term
+                    term_match = not search_term or search_term.lower() in line.lower()
+                    
+                    # Check log level
+                    level_match = False
+                    for level in log_level:
+                        if f"[{level}]" in line or f" {level} " in line:
+                            level_match = True
+                            break
+                    
+                    # If both filters match, add the line
+                    if term_match and level_match:
                         filtered_lines.append(line)
                 
                 if filtered_lines:
                     filtered_content = '\n'.join(filtered_lines)
-                    st.text_area("Filtered Log Content:", filtered_content, height=400)
-                    st.info(f"Found {len(filtered_lines)} lines containing '{search_term}'")
+                    
+                    # Create scrollable area with fixed height
+                    st.markdown("""
+                    <style>
+                    .log-container {
+                        max-height: 400px;
+                        overflow-y: auto;
+                        border: 1px solid #e0e0e0;
+                        border-radius: 4px;
+                        background-color: #f8f9fa;
+                        padding: 10px;
+                        font-family: monospace;
+                        white-space: pre;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    # Display log content in scrollable container
+                    st.markdown(f'<div class="log-container">{filtered_content}</div>', unsafe_allow_html=True)
+                    
+                    st.success(f"Found {len(filtered_lines)} matching lines")
                 else:
-                    st.warning(f"No matches found for '{search_term}'")
-                    st.text_area("Log contents:", log_content, height=400)
+                    st.warning("No matching lines found")
+                    # Show original content in scrollable container
+                    st.markdown("""
+                    <style>
+                    .log-container {
+                        max-height: 400px;
+                        overflow-y: auto;
+                        border: 1px solid #e0e0e0;
+                        border-radius: 4px;
+                        background-color: #f8f9fa;
+                        padding: 10px;
+                        font-family: monospace;
+                        white-space: pre;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                    
+                    st.markdown(f'<div class="log-container">{log_content}</div>', unsafe_allow_html=True)
             else:
-                # Display log content in a scrollable box with syntax highlighting
-                st.code(log_content, language="text")
+                # Display log content in scrollable container
+                st.markdown("""
+                <style>
+                .log-container {
+                    max-height: 400px;
+                    overflow-y: auto;
+                    border: 1px solid #e0e0e0;
+                    border-radius: 4px;
+                    background-color: #f8f9fa;
+                    padding: 10px;
+                    font-family: monospace;
+                    white-space: pre;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                st.markdown(f'<div class="log-container">{log_content}</div>', unsafe_allow_html=True)
             
             # Action buttons
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("🔄 Refresh Log", use_container_width=True):
+                if st.button("🔄 Refresh", use_container_width=True):
                     st.rerun()
             
             with col2:
-                if st.button("📥 Download Log", use_container_width=True):
-                    # In a real implementation, we would trigger a download here
-                    st.info("Download functionality not implemented in this demo")
+                # Download button using built-in functionality
+                st.download_button(
+                    label="📥 Download Log",
+                    data=log_content,
+                    file_name=os.path.basename(selected_log["path"]),
+                    mime="text/plain",
+                    use_container_width=True
+                )
             
-            with col3:
-                if st.button("🗑️ Clear Log File", use_container_width=True):
-                    # Confirm deletion
-                    st.warning("Are you sure you want to clear this log file? This cannot be undone.")
-                    
-                    confirm_col1, confirm_col2 = st.columns(2)
-                    with confirm_col1:
-                        if st.button("✅ Yes, clear log", key="confirm_clear_log"):
-                            # In a real implementation, we would clear the log file
-                            st.success("Log file cleared successfully")
-                            st.rerun()
-                    with confirm_col2:
-                        if st.button("❌ Cancel", key="cancel_clear_log"):
-                            st.rerun()
+            # Count log levels
+            error_count = sum(1 for line in log_content.lower().split('\n') if "[error]" in line or " error " in line)
+            warning_count = sum(1 for line in log_content.lower().split('\n') if "[warning]" in line or " warning " in line)
+            info_count = sum(1 for line in log_content.lower().split('\n') if "[info]" in line or " info " in line)
+            debug_count = sum(1 for line in log_content.lower().split('\n') if "[debug]" in line or " debug " in line)
             
-            # Log statistics
-            if log_content:
-                st.markdown("""
-                <div class="logs-section">
-                    <h3>📊 Log Analysis</h3>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Count log levels
-                error_count = log_content.lower().count("error")
-                warning_count = log_content.lower().count("warning")
-                info_count = log_content.lower().count("info")
-                debug_count = log_content.lower().count("debug")
-                
-                # Display as a horizontal bar chart
-                st.markdown("""
-                <div class="log-stats">
-                    <div class="log-stat-item">
-                        <div class="log-stat-label">Error</div>
-                        <div class="log-stat-bar error" style="width: calc({0}% * 100 / {1} + 20px);">{0}</div>
-                    </div>
-                    <div class="log-stat-item">
-                        <div class="log-stat-label">Warning</div>
-                        <div class="log-stat-bar warning" style="width: calc({2}% * 100 / {1} + 20px);">{2}</div>
-                    </div>
-                    <div class="log-stat-item">
-                        <div class="log-stat-label">Info</div>
-                        <div class="log-stat-bar info" style="width: calc({3}% * 100 / {1} + 20px);">{3}</div>
-                    </div>
-                    <div class="log-stat-item">
-                        <div class="log-stat-label">Debug</div>
-                        <div class="log-stat-bar debug" style="width: calc({4}% * 100 / {1} + 20px);">{4}</div>
-                    </div>
-                </div>
-                """.format(
-                    error_count,
-                    max(1, error_count + warning_count + info_count + debug_count),
-                    warning_count,
-                    info_count,
-                    debug_count
-                ), unsafe_allow_html=True)
-                
+            # Show simple stats
+            st.subheader("Log Summary")
+            stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
+            
+            with stats_col1:
+                st.metric("Errors", error_count)
+            
+            with stats_col2:
+                st.metric("Warnings", warning_count)
+            
+            with stats_col3:
+                st.metric("Info", info_count)
+            
+            with stats_col4:
+                st.metric("Debug", debug_count)
+            
         except Exception as e:
-            st.error(f"""
-            <div class="error-box">
-                <div class="error-icon">❌</div>
-                <div class="error-message">Error reading log file: {str(e)}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.error(f"Error reading log file: {str(e)}")
     
-    # Log management section
-    st.markdown("""
-    <div class="logs-section">
-        <h3>⚙️ Log Management</h3>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("Archive Old Logs", use_container_width=True):
-            # In a real implementation, we would archive old logs
-            st.info("This feature is not implemented in this demo")
-    
-    with col2:
-        if st.button("Clear All Logs", use_container_width=True):
-            # In a real implementation, we would clear all logs
-            st.warning("Are you sure you want to clear all logs? This cannot be undone.")
-            
-            confirm_col1, confirm_col2 = st.columns(2)
-            with confirm_col1:
-                if st.button("✅ Yes, clear all", key="confirm_clear_all"):
-                    # In a real implementation, we would clear all logs
-                    st.success("All logs cleared successfully")
-                    st.rerun()
-            with confirm_col2:
-                if st.button("❌ Cancel", key="cancel_clear_all"):
-                    st.rerun()
-    
-    with col3:
-        if st.button("Download All Logs", use_container_width=True):
-            # In a real implementation, we would trigger a download
-            st.info("This feature is not implemented in this demo")
+    # Log management
+    with st.expander("Log Management"):
+        st.write("Basic log management options:")
+        
+        management_col1, management_col2 = st.columns(2)
+        
+        with management_col1:
+            if st.button("Clear Selected Log", use_container_width=True):
+                if selected_log:
+                    try:
+                        with open(selected_log["path"], 'w') as f:
+                            f.write(f"Log cleared on {datetime.now()}\n")
+                        st.success("Log file cleared successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error clearing log: {str(e)}")
+        
+        with management_col2:
+            if st.button("Download All Logs", use_container_width=True):
+                # Create a simple concatenated file of all logs
+                all_logs = ""
+                for log_file in log_files:
+                    try:
+                        with open(log_file, 'r') as f:
+                            file_content = f.read()
+                        
+                        filename = os.path.basename(log_file)
+                        all_logs += f"\n\n--- {filename} ---\n\n"
+                        all_logs += file_content
+                    except Exception as e:
+                        all_logs += f"\n\nError reading {os.path.basename(log_file)}: {str(e)}\n\n"
+                
+                # Download button
+                st.download_button(
+                    label="Download Combined Logs",
+                    data=all_logs,
+                    file_name="all_logs.txt",
+                    mime="text/plain"
+                )

@@ -12,11 +12,18 @@ project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-# Set up custom CSS
+
 def load_css():
+    # Load main CSS
     css_file = os.path.join(project_root, "app", "ui", "static", "css", "custom.css")
     with open(css_file, "r") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    
+    # Load logs tab specific CSS
+    logs_css_file = os.path.join(project_root, "app", "ui", "static", "css", "logs_tab.css")
+    if os.path.exists(logs_css_file):
+        with open(logs_css_file, "r") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # Set up page configuration
 st.set_page_config(
