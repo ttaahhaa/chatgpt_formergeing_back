@@ -56,9 +56,25 @@ def save_current_conversation():
     preview = first_msg[:50] + "..." if len(first_msg) > 50 else first_msg
     last_timestamp = st.session_state.chat_history[-1]["timestamp"]
     
+    # Create a deep copy of the chat history to avoid modifying the original
+    processed_messages = []
+    for msg in st.session_state.chat_history:
+        processed_msg = msg.copy()
+        
+        # If this is an assistant message with HTML sources, process it
+        if msg["role"] == "assistant" and '<div class="sources-section">' in msg["content"]:
+            # Split content at the sources section to create a clean preview
+            parts = msg["content"].split('<div class="sources-section">', 1)
+            # We keep the HTML in the content when saving, but use the clean text for preview
+            processed_msg["clean_content"] = parts[0].strip()
+        else:
+            processed_msg["clean_content"] = msg["content"]
+            
+        processed_messages.append(processed_msg)
+    
     conversation_data = {
         "id": st.session_state.conversation_id,
-        "messages": st.session_state.chat_history,
+        "messages": st.session_state.chat_history,  # Original messages with HTML
         "preview": preview,
         "last_updated": last_timestamp,
         "message_count": len(st.session_state.chat_history)

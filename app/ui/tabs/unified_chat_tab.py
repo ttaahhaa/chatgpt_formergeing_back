@@ -74,7 +74,13 @@ def unified_chat_tab():
         if message["role"] == "user":
             st.chat_message("user", avatar="👤").write(message["content"])
         else:
-            st.chat_message("assistant", avatar="🤖").write(message["content"])
+            with st.chat_message("assistant"):
+                # Write the main content
+                st.write(message["content"])
+                
+                # If the message has sources, display them with the HTML
+                if "sources_html" in message and message["sources_html"]:
+                    st.markdown(message["sources_html"], unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)
     
