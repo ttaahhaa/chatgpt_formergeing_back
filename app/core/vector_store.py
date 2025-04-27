@@ -13,6 +13,27 @@ from app.core.embeddings import Embeddings
 
 logger = logging.getLogger(__name__)
 
+def debug_store(self):
+    """Print debug information about the vector store."""
+    print("\n===== VECTOR STORE DEBUG INFO =====")
+    print(f"Documents in store: {len(self.documents)}")
+    
+    for i, doc in enumerate(self.documents):
+        print(f"\nDocument {i+1}:")
+        print(f"  Filename: {doc.get('filename', 'Unknown')}")
+        print(f"  Type: {doc.get('metadata', {}).get('type', 'Unknown')}")
+        print(f"  Content length: {len(doc.get('content', ''))}")
+        print(f"  Content snippet: {doc.get('content', '')[:100]}...")
+        
+        if len(self.document_embeddings) > i:
+            embedding = self.document_embeddings[i]
+            print(f"  Embedding shape: {embedding.shape}")
+            print(f"  Embedding sample: {embedding[:5]}...")
+        else:
+            print("  No embedding found for this document")
+    
+    print("\n===== END DEBUG INFO =====")
+
 class VectorStore:
     """Class for managing vector embeddings of documents."""
     
@@ -45,7 +66,28 @@ class VectorStore:
         self._load_cache()
         
         logger.info(f"Initialized vector store with {len(self.documents)} documents")
-    
+        
+    def query_with_debug(self, query_text: str, top_k: int = 5) -> list:
+        """
+        Query the vector store with debug information.
+        """
+        print(f"\n===== QUERY DEBUG =====")
+        print(f"Query: {query_text}")
+        print(f"Documents in store: {len(self.documents)}")
+        
+        # Call the original query method
+        results = self.query(query_text, top_k)
+        
+        print(f"Results found: {len(results)}")
+        for i, result in enumerate(results):
+            print(f"Result {i+1}:")
+            print(f"  Filename: {result.get('filename', 'Unknown')}")
+            print(f"  Score: {result.get('score', 0)}")
+            print(f"  Content snippet: {result.get('content', '')[:100]}...")
+        
+        print("===== END QUERY DEBUG =====\n")
+        return results
+
     def add_document(self, document: Dict[str, Any]) -> None:
         """
         Add a document to the vector store.
@@ -113,7 +155,7 @@ class VectorStore:
     
     def query(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
-        Query the vector store for relevant documents.
+        Query the vector store for relevant documents with improved reliability.
         
         Args:
             query_text: Query text
@@ -133,7 +175,10 @@ class VectorStore:
             # Calculate similarity scores
             scores = []
             for i, doc_embedding in enumerate(self.document_embeddings):
-                similarity = self.embeddings_model.similarity(query_embedding, doc_embedding)
+                # Use a more reliable similarity calculation
+                similarity = float(self.embeddings_model.similarity(query_embedding, doc_embedding))
+                
+                # Add document index and similarity score
                 scores.append((i, similarity))
             
             # Sort by similarity score (descending)
@@ -142,9 +187,22 @@ class VectorStore:
             # Get top-k results
             results = []
             for i, score in scores[:top_k]:
-                doc = self.documents[i].copy()
-                doc["score"] = float(score)  # Convert numpy float to Python float
-                results.append(doc)
+                # Create a copy to avoid modifying the original document
+                if i < len(self.documents):
+                    doc = self.documents[i].copy()
+                    doc["score"] = float(score)  # Convert numpy float to Python float
+                    
+                    # Ensure the document has content
+                    if "content" not in doc or not doc["content"]:
+                        logger.warning(f"Document {i} has no content")
+                        continue
+                        
+                    results.append(doc)
+            
+            # Log the results for debugging
+            logger.info(f"Query: '{query_text}' returned {len(results)} results")
+            for i, doc in enumerate(results):
+                logger.info(f"Result {i+1}: {doc.get('filename', 'Unknown')} (score: {doc.get('score', 0)})")
             
             return results
             
