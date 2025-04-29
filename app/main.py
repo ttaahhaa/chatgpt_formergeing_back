@@ -39,7 +39,7 @@ app = FastAPI(title="Document QA Assistant API")
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, change to specific origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,12 +70,75 @@ class QueryResponse(BaseModel):
     sources: Optional[List[Dict[str, Any]]] = None
     conversation_id: Optional[str] = None
 
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+    conversation_context: Optional[List[Dict[str, str]]] = None
+    mode: Optional[str] = "auto"  # auto, documents_only, general_knowledge
+
+class ChatResponse(BaseModel):
+    response: str
+    sources: Optional[List[Dict[str, Any]]] = None
+    conversation_id: Optional[str] = None
+
 # API routes
 @app.get("/")
 async def root():
     logger.info("Root endpoint accessed")
     return {"message": "Document QA Assistant API is running"}
 
+# Update app/main.py to ensure all required endpoints are exposed:
+
+# Add endpoint for chat functionality
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    try:
+        logger.info(f"Processing chat message: {request.message}")
+        
+        # Check if we need document retrieval
+        use_documents = request.mode != "general_knowledge"
+        
+        # Get conversation history
+        conversation_context = request.conversation_context or []
+        
+        if use_documents:
+            # Retrieve relevant documents
+            documents = app.state.retriever.retrieve(request.message, top_k=5)
+            
+            # Generate response with sources
+            result = app.state.llm_chain.query_with_sources(
+                request.message, 
+                documents
+            )
+            
+            response = ChatResponse(
+                response=result["response"],
+                sources=result["sources"],
+                conversation_id=request.conversation_id
+            )
+        else:
+            # Generate response without document retrieval
+            response_text = app.state.llm_chain.generate_response(
+                request.message, 
+                conversation_context
+            )
+            
+            response = ChatResponse(
+                response=response_text,
+                sources=[],
+                conversation_id=request.conversation_id
+            )
+        
+        logger.info("Chat processed successfully")
+        return response
+    
+    except Exception as e:
+        logger.error(f"Error processing chat: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error processing chat: {str(e)}"}
+        )
+    
 @app.post("/api/upload")
 async def upload_document(file: UploadFile = File(...)):
     try:
