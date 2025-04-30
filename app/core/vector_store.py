@@ -262,3 +262,4 @@ class VectorStore:
             if doc.get("filename") == filename:
                 return doc
         return None
+vector_store = VectorStore()
