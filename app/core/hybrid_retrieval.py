@@ -129,7 +129,7 @@ class HybridRetriever:
             List of relevant documents
         """
         # Semantic search via vector store
-        semantic_results = vector_store.similarity_search(query, k=k*2)  # Get more for re-ranking
+        semantic_results = vector_store.query(query, top_k=k*2)  # Get more for re-ranking
         
         if not semantic_results:
             logger.warning("No results from semantic search")
@@ -150,8 +150,9 @@ class HybridRetriever:
             hybrid_results = []
             
             # Create lookup dictionaries for faster access
-            semantic_dict = {doc['id']: (i, doc) for i, doc in enumerate(semantic_results)}
-            keyword_dict = {doc['id']: (i, doc) for i, doc in enumerate(keyword_results)}
+            semantic_dict = {doc.get('id', doc.get('filename', f"doc_{i}")): (i, doc) for i, doc in enumerate(semantic_results)}
+            keyword_dict = {doc.get('id', doc.get('filename', f"doc_{i}")): (i, doc) for i, doc in enumerate(keyword_results)}
+
             
             # Get all unique document IDs
             all_ids = set(semantic_dict.keys()) | set(keyword_dict.keys())
