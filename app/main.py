@@ -13,6 +13,7 @@ from datetime import datetime
 from app.utils.conversation_utils import list_conversations
 # Setup logging with explicit date handling
 from app.utils.logging_utils import setup_logging
+import json
 
 # Get the current date for log file naming
 today = datetime.now().strftime("%Y%m%d")
@@ -501,11 +502,149 @@ async def get_conversations():
             content={"error": f"Failed to load conversations: {str(e)}"}
         )
 
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get a specific conversation with its messages."""
+    try:
+        logger.info(f"Retrieving conversation: {conversation_id}")
+        
+        from app.utils.conversation_utils import CONVERSATION_DIR
+        
+        # Check if conversation exists
+        conversation_path = CONVERSATION_DIR / f"{conversation_id}.json"
+        if not conversation_path.exists():
+            logger.warning(f"Conversation not found: {conversation_id}")
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Conversation not found: {conversation_id}"}
+            )
+        
+        # Load conversation data
+        with open(conversation_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        # Check for "messages" or "history" field
+        messages = []
+        if "messages" in data:
+            messages = data["messages"]
+        elif "history" in data:
+            messages = data["history"]
+            
+        logger.info(f"Successfully retrieved conversation with {len(messages)} messages")
+        
+        # Return a consistent format
+        return {
+            "conversation_id": conversation_id,
+            "messages": messages,
+            "preview": data.get("preview", ""),
+            "last_updated": data.get("last_updated", "")
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving conversation: {str(e)}")
+        return JSONResponse(
+            status_code=500, 
+            content={"error": f"Failed to retrieve conversation: {str(e)}"}
+        )
+
+@app.post("/api/conversations/save")
+async def save_conversation_api(data: dict):
+    """Save a conversation with proper field handling."""
+    try:
+        # Import json if it's not already imported
+        import json
+        from datetime import datetime
+        
+        from app.utils.conversation_utils import save_conversation
+        
+        conv_id = data.get("conversation_id")
+        if not conv_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "conversation_id is required"}
+            )
+            
+        logger.info(f"Saving conversation: {conv_id}")
+        
+        # Ensure all required fields exist
+        if "messages" not in data and "history" in data:
+            # Convert history to messages (frontend may use different field names)
+            data["messages"] = data.pop("history")
+        elif "messages" not in data:
+            # Ensure messages exists
+            data["messages"] = []
+            
+        # Ensure preview exists
+        if not data.get("preview"):
+            data["preview"] = "New Conversation"
+            
+        # Ensure last_updated exists
+        if not data.get("last_updated"):
+            data["last_updated"] = datetime.now().isoformat()
+            
+        # Calculate message count
+        data["messageCount"] = len(data.get("messages", []))
+        
+        # Call the utility function
+        save_conversation(data)
+        
+        logger.info(f"Successfully saved conversation: {conv_id}")
+        return {"status": "saved"}
+    except Exception as e:
+        logger.error(f"Error saving conversation: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to save conversation: {str(e)}"}
+        )
+
+@app.post("/api/conversations/clear")
+async def clear_conversations():
+    """Clear all conversations."""
+    try:
+        logger.info("Clearing all conversations")
+        
+        from app.utils.conversation_utils import clear_context
+        
+        # Call the utility function to clear all conversations
+        result = clear_context()
+        
+        if result:
+            logger.info("Successfully cleared all conversations")
+            return {"message": "All conversations cleared successfully"}
+        else:
+            logger.error("Failed to clear conversations")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to clear conversations"}
+            )
+    except Exception as e:
+        logger.error(f"Error clearing conversations: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to clear conversations: {str(e)}"}
+        )
+    
 @app.post("/api/conversations/save")
 async def save_conversation(data: dict):
-    from app.utils.conversation_utils import save_conversation
-    save_conversation(data)
-    return {"status": "saved"}
+    """Save a conversation."""
+    try:
+        # Import json if it's not already imported
+        import json
+        
+        from app.utils.conversation_utils import save_conversation
+        
+        logger.info(f"Saving conversation: {data.get('conversation_id')}")
+        
+        # Call the utility function
+        save_conversation(data)
+        
+        logger.info(f"Successfully saved conversation: {data.get('conversation_id')}")
+        return {"status": "saved"}
+    except Exception as e:
+        logger.error(f"Error saving conversation: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to save conversation: {str(e)}"}
+        )
 
 @app.post("/api/clear_documents")
 async def clear_documents():
