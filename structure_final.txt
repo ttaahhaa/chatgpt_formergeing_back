@@ -1,34 +1,55 @@
-app/
-├── core/
-│   ├── __init__.py
-│   ├── document_loader.py
-│   ├── embeddings.py
-│   ├── llm.py
-│   └── vector_store.py
-├── ui/
-│   ├── __init__.py
-│   ├── streamlit_app.py
-│   ├── static/
-│   │   └── css/
-│   │       └── custom.css
-│   ├── .streamlit/
-│   │   └── config.toml
-│   ├── tabs/
+document_qa_assistant/
+│
+├── app/
+│   ├── __init__.py                     # Package initialization
+│   ├── config.py                       # Original file-based configuration
+│   ├── config_mongodb.py               # New MongoDB configuration
+│   ├── main.py                         # Original FastAPI application
+│   ├── main_mongodb.py                 # New MongoDB-based API
+│   │
+│   ├── core/
 │   │   ├── __init__.py
-│   │   ├── chat_tab.py
-│   │   ├── documents_tab.py
-│   │   ├── general_knowledge_tab.py
-│   │   ├── logs_tab.py
-│   │   ├── settings_tab.py
-│   │   ├── status_tab.py
-│   │   └── unified_chat_tab.py
-│   └── utils/
+│   │   ├── document_loader.py          # Document loading functionality
+│   │   ├── embeddings.py               # ArabERT embedding generation
+│   │   ├── hybrid_retrieval.py         # Hybrid retrieval system
+│   │   ├── knowledge_graph.py          # Knowledge graph construction
+│   │   ├── llm.py                      # LLM integration (Ollama)
+│   │   ├── vector_store.py             # Original file-based vector store
+│   │   ├── vector_store_mongodb.py     # MongoDB-based vector store
+│   │   └── vector_store_hybrid.py      # Hybrid MongoDB-FAISS vector store
+│   │
+│   ├── database/
+│   │   ├── __init__.py                 # Database initialization module
+│   │   ├── config.py                   # MongoDB connection configuration
+│   │   ├── models.py                   # Pydantic models for MongoDB collections
+│   │   ├── migration_utility.py        # Migration utility for file to MongoDB
+│   │   │
+│   │   ├── repositories/
+│   │   │   ├── __init__.py
+│   │   │   ├── base_repository.py      # Base repository with CRUD operations
+│   │   │   ├── document_repository.py  # Document-specific repository
+│   │   │   ├── embedding_repository.py # Embedding-specific repository
+│   │   │   ├── conversation_repository.py # Conversation-specific repository
+│   │   │   ├── user_repository.py      # User management repository
+│   │   │   ├── knowledge_graph_repository.py # Knowledge graph repository
+│   │   │   └── factory.py              # Repository factory
+│   │
+│   ├── utils/
 │       ├── __init__.py
-│       ├── components.py
-│       ├── conversation.py
-│       └── sidebar.py
+│       ├── cache_utils.py              # Caching utilities
+│       ├── conversation_utils.py       # Conversation management
+│       ├── logging_utils.py            # Logging configuration
+│       └── text_processing.py          # Text processing utilities
+│
 ├── data/
-│   ├── cache/
-│   ├── conversations/
-│   └── vector_store/
-└── logs/
+│   ├── cache/                          # Cache directory for file-based system
+│   ├── conversations/                  # Conversation storage for file-based system
+│   ├── embeddings/                     # Directory for embedding models
+│   │   └── arabert/                    # ArabERT model files
+│   └── faiss_cache/                    # FAISS index cache directory
+│
+├── logs/                               # Application logs directory
+│
+├── migrate_to_mongodb.py               # Migration script
+├── requirements.txt                    # Python dependencies
+└── README.md                           # Project documentation

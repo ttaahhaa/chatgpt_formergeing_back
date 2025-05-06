@@ -279,7 +279,7 @@ async def check_ollama():
             status_code=500,
             content={"status": "unavailable", "error": f"Error checking Ollama: {str(e)}"}
         )
-# app/main.py
+
 @app.post("/api/set_model")
 async def set_model(request: dict):
     """Set the current LLM model."""
@@ -301,7 +301,6 @@ async def set_model(request: dict):
             content={"error": f"Error setting model: {str(e)}"}
         )
 
-# app/main.py
 @app.post("/api/clear_cache")
 async def clear_cache():
     """Clear application cache."""
@@ -403,6 +402,7 @@ async def chat(request: ChatRequest):
             status_code=500,
             content={"error": f"Error processing chat: {str(e)}"}
         )    
+
 @app.post("/api/upload")
 async def upload_document(file: UploadFile = File(...)):
     try:
@@ -445,7 +445,6 @@ async def upload_document(file: UploadFile = File(...)):
             status_code=500,
             content={"error": f"Error processing document: {str(e)}"}
         )
-
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
@@ -671,7 +670,6 @@ async def get_documents():
             content={"error": f"Error retrieving documents: {str(e)}"}
         )
 
-
 @app.post("/api/delete_document")
 async def delete_document(filename: str = Form(...)):
     try:
@@ -692,7 +690,6 @@ async def delete_document(filename: str = Form(...)):
             content={"error": f"Failed to delete document: {str(e)}"}
         )
     
-# Create a route to access logs
 @app.get("/api/logs")
 async def get_logs():
     try:
