@@ -14,7 +14,6 @@ set date=%year%%month%%day%
 
 REM Remove any existing log files with today's date
 del /f /q logs\app_%date%.log 2>nul
-del /f /q logs\streamlit_%date%.log 2>nul
 
 REM Check if AraberT model directory exists
 if not exist data\embeddings\arabert (
@@ -44,6 +43,8 @@ if %ERRORLEVEL% NEQ 0 (
     pause
 )
 
-REM Start the application
-echo Starting Streamlit application...
-streamlit run app/ui/streamlit_app.py
+REM Start the FastAPI application
+echo Starting FastAPI application on http://localhost:8000 ...
+uvicorn app.main_mongodb:app --host 0.0.0.0 --port 8000 --reload
+
+pause

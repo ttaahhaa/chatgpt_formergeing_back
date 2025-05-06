@@ -18,11 +18,11 @@ class MongoDBConfig:
         # MongoDB connection settings
         self.host = os.getenv("MONGODB_HOST", "localhost")
         self.port = int(os.getenv("MONGODB_PORT", "27017"))
-        self.username = os.getenv("MONGODB_USERNAME", "")
-        self.password = os.getenv("MONGODB_PASSWORD", "")
+        self.username = os.getenv("MONGODB_USERNAME", "admin")
+        self.password = os.getenv("MONGODB_PASSWORD", "P@ssw0rd")
         self.database_name = os.getenv("MONGODB_DATABASE", "document_qa")
         self.auth_source = os.getenv("MONGODB_AUTH_SOURCE", "admin")
-        
+
         # Connection instances (initialized on demand)
         self._client: Optional[MongoClient] = None
         self._async_client: Optional[AsyncIOMotorClient] = None
@@ -50,14 +50,23 @@ class MongoDBConfig:
         if self._client is None:
             try:
                 logger.info(f"Connecting to MongoDB at {self.host}:{self.port}")
-                self._client = MongoClient(
-                    host=self.host,
-                    port=self.port,
-                    username=self.username or None,
-                    password=self.password or None,
-                    authSource=self.auth_source if self.username else None,
-                    serverSelectionTimeoutMS=5000  # 5 second timeout
-                )
+                
+                # Create connection arguments
+                connection_args = {
+                    "host": self.host,
+                    "port": self.port,
+                    "serverSelectionTimeoutMS": 5000  # 5 second timeout
+                }
+                
+                # Only add authentication if username is provided
+                if self.username:
+                    connection_args["username"] = self.username
+                    connection_args["password"] = self.password
+                    connection_args["authSource"] = self.auth_source
+                
+                # Create client with proper args
+                self._client = MongoClient(**connection_args)
+                
                 # Test connection
                 self._client.admin.command('ping')
                 logger.info("Successfully connected to MongoDB")
@@ -65,7 +74,7 @@ class MongoDBConfig:
                 logger.error(f"Failed to connect to MongoDB: {str(e)}")
                 raise
         return self._client
-    
+
     def get_async_client(self) -> AsyncIOMotorClient:
         """Get or create an async MongoDB client."""
         if self._async_client is None:
