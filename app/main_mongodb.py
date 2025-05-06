@@ -1,7 +1,3 @@
-"""
-Main FastAPI application with MongoDB support.
-This is a modified version of main.py that uses MongoDB repositories.
-"""
 import os
 import logging
 import tempfile
@@ -21,25 +17,32 @@ import asyncio
 # Setup logging
 from app.utils.logging_utils import setup_logging
 from app.core.vector_store_hybrid import get_hybrid_vector_store
-# Get the current date for log file naming
+from app.core.mongodb_logger import MongoDBLogHandler
+
+# Set up logging directories and filenames
 today = datetime.now().strftime("%Y%m%d")
 base_dir = os.path.dirname(os.path.dirname(__file__))
 logs_dir = os.path.join(base_dir, "logs")
 os.makedirs(logs_dir, exist_ok=True)
 
-# Create log file path with today's date
 log_file = os.path.join(logs_dir, f"app_mongodb_{today}.log")
 
-# Initialize logger with app name
+# Setup standard file logger (INFO and above)
 logger = setup_logging(log_file=log_file, log_level="INFO", app_name="app_mongodb")
 logger.info("MongoDB API Service starting")
 
-# Import MongoDB modules
+# Setup MongoDB log handler (store WARNING and above to MongoDB only)
+mongo_handler = MongoDBLogHandler(level=logging.WARNING)
+mongo_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
+# Attach MongoDB handler to root logger
+root_logger = logging.getLogger()
+root_logger.addHandler(mongo_handler)
+
+# Import MongoDB and core components
 from app.database import initialize_database
 from app.database.repositories.factory import repository_factory
 from app.core.vector_store_mongodb import get_vector_store
-
-# Import project modules
 from app.core.document_loader import DocumentLoader
 from app.core.llm import LLMChain
 from app.core.hybrid_retrieval import HybridRetriever
@@ -335,191 +338,108 @@ async def query(request: QueryRequest):
             content={"error": f"Error processing query: {str(e)}"}
         )
 
-@app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(get_db)])
-async def chat(request: ChatRequest):
-    """Chat with the assistant using documents and general knowledge."""
+@app.post("/api/chat")
+async def chat(request: dict):
+    """Process a chat message and return a response."""
     try:
-        logger.info(f"Processing chat message: {request.message}")
-
-        use_documents = request.mode != "general_knowledge"
-        use_general = request.mode != "documents_only"
-
-        # Get or create conversation
-        conversation_id = request.conversation_id
-        if not conversation_id:
-            # Create a new conversation
-            conversation_id = await app.state.conversation_repo.create_new_conversation(
-                owner_id=request.user_id
-            )
-            logger.info(f"Created new conversation: {conversation_id}")
+        # Extract message and conversation ID from request
+        message = request.get("message", "")
+        conversation_id = request.get("conversation_id")
         
-        # Add user message to conversation
-        await app.state.conversation_repo.add_message(
-            conversation_id=conversation_id,
-            role="user",
-            content=request.message
-        )
-
-        # Get conversation history
-        conversation = await app.state.conversation_repo.find_by_id(conversation_id)
-        if not conversation:
+        if not message:
             return JSONResponse(
-                status_code=404,
-                content={"error": f"Conversation not found: {conversation_id}"}
+                status_code=400,
+                content={"error": "Message is required"}
             )
         
-        # Format conversation history for LLM
+        # Get LLM instance
+        llm = LLMChain()
+        
+        # Get conversation history if conversation_id is provided
         conversation_context = []
-        for message in conversation.messages[-5:]:  # Last 5 messages for context
-            conversation_context.append({
-                "role": message.role,
-                "content": message.content
-            })
-
-        response = None
-        sources = []
-
-        if use_documents:
-            # Retrieve relevant documents
-            documents = await app.state.vector_store.async_store.query(request.message, top_k=5)
-            logger.info(f"Retrieved {len(documents)} relevant documents")
-
-            if documents:
-                # Generate response with documents
-                result = app.state.llm_chain.query_with_sources(request.message, documents)
-                response = result["response"]
-                sources = result["sources"]
-            elif use_general:
-                logger.info("No relevant documents found, falling back to general knowledge")
-                # Fall back to general knowledge
-                conversation_context.insert(0, {
-                    "role": "system",
-                    "content": "You are a helpful assistant. No relevant documents are available for this question."
+        if conversation_id:
+            conversation_repo = repository_factory.conversation_repository
+            conversation = await conversation_repo.find_by_id(conversation_id)
+            
+            if conversation:
+                # Convert ConversationMessage objects to dictionaries if needed
+                for msg in conversation.messages:
+                    # Check if it's already a dict or needs conversion
+                    if isinstance(msg, dict):
+                        # Make sure the dict has the required fields
+                        if "role" in msg and "content" in msg:
+                            conversation_context.append({
+                                "role": msg["role"],
+                                "content": msg["content"]
+                            })
+                    else:
+                        # It's a Pydantic model, extract the fields
+                        conversation_context.append({
+                            "role": msg.role,
+                            "content": msg.content
+                        })
+        
+        # Generate response
+        response = llm.generate_response(message, conversation_context)
+        
+        # Save the conversation if conversation_id is provided
+        if conversation_id:
+            # Save user message
+            user_message = {
+                "role": "user",
+                "content": message,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Save assistant response
+            assistant_message = {
+                "role": "assistant",
+                "content": response,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Add messages to conversation
+            conversation_repo = repository_factory.conversation_repository
+            conversation = await conversation_repo.find_by_id(conversation_id)
+            
+            if conversation:
+                # Get existing messages
+                messages = conversation.messages
+                
+                # Add new messages
+                messages.append(user_message)
+                messages.append(assistant_message)
+                
+                # Update conversation
+                await conversation_repo.update(conversation_id, {
+                    "messages": messages,
+                    "preview": message[:50] + "..." if len(message) > 50 else message,
+                    "last_updated": datetime.utcnow()
                 })
-                response = app.state.llm_chain.generate_response(request.message, conversation_context)
-                sources = []
             else:
-                logger.warning("No documents found and general fallback disabled")
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "No relevant documents found to answer the question."}
-                )
-        else:
-            # Only use general knowledge
-            logger.info("Using general knowledge only")
-            conversation_context.insert(0, {
-                "role": "system",
-                "content": "You are a helpful assistant answering using your own knowledge without access to documents."
-            })
-            response = app.state.llm_chain.generate_response(request.message, conversation_context)
-            sources = []
+                # Create new conversation
+                new_conversation = {
+                    "id": conversation_id,
+                    "messages": [user_message, assistant_message],
+                    "preview": message[:50] + "..." if len(message) > 50 else message,
+                    "last_updated": datetime.utcnow()
+                }
+                
+                # Use the Conversation model to create a new conversation
+                from app.database.models import Conversation
+                conversation_obj = Conversation(**new_conversation)
+                await conversation_repo.create(conversation_obj)
         
-        # Add assistant response to conversation
-        await app.state.conversation_repo.add_message(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=response
-        )
-
-        return ChatResponse(
-            response=response,
-            sources=sources,
-            conversation_id=conversation_id
-        )
-
+        # Return response
+        return {
+            "response": response,
+            "conversation_id": conversation_id
+        }
     except Exception as e:
-        logger.exception("Error during chat processing")
+        logger.error(f"Error processing chat message: {str(e)}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error processing chat: {str(e)}"}
-        )
-
-@app.post("/api/conversations/new", dependencies=[Depends(get_db)])
-async def new_conversation(user_id: Optional[str] = None):
-    """Create a new empty conversation."""
-    try:
-        # Create a new conversation
-        conversation_id = await app.state.conversation_repo.create_new_conversation(
-            owner_id=user_id
-        )
-        
-        if not conversation_id:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Failed to create new conversation"}
-            )
-        
-        logger.info(f"Created new conversation: {conversation_id}")
-        return {"conversation_id": conversation_id}
-    
-    except Exception as e:
-        logger.error(f"Error creating conversation: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error creating conversation: {str(e)}"}
-        )
-
-@app.get("/api/conversations", dependencies=[Depends(get_db)])
-async def get_conversations(user_id: Optional[str] = None, limit: int = 50):
-    """Get a list of conversations."""
-    try:
-        # Get conversation list with summary info
-        conversations = await app.state.conversation_repo.get_conversation_list(
-            owner_id=user_id,
-            limit=limit
-        )
-        
-        return {"conversations": conversations}
-    
-    except Exception as e:
-        logger.error(f"Error retrieving conversations: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error retrieving conversations: {str(e)}"}
-        )
-
-@app.get("/api/conversations/{conversation_id}", dependencies=[Depends(get_db)])
-async def get_conversation(conversation_id: str):
-    """Get a specific conversation with its messages."""
-    try:
-        conversation = await app.state.conversation_repo.find_by_id(conversation_id)
-        
-        if not conversation:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Conversation not found: {conversation_id}"}
-            )
-        
-        # Convert to dictionary for response
-        return conversation.dict()
-    
-    except Exception as e:
-        logger.error(f"Error retrieving conversation: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error retrieving conversation: {str(e)}"}
-        )
-
-@app.post("/api/conversations/clear", dependencies=[Depends(get_db)])
-async def clear_conversation(conversation_id: str):
-    """Clear messages from a conversation."""
-    try:
-        success = await app.state.conversation_repo.clear_messages(conversation_id)
-        
-        if not success:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Conversation not found or could not be cleared: {conversation_id}"}
-            )
-        
-        logger.info(f"Cleared messages from conversation: {conversation_id}")
-        return {"message": "Conversation cleared successfully"}
-    
-    except Exception as e:
-        logger.error(f"Error clearing conversation: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error clearing conversation: {str(e)}"}
+            content={"error": f"Chat processing error: {str(e)}"}
         )
 
 @app.post("/api/clear_documents", dependencies=[Depends(get_db)])
@@ -776,6 +696,193 @@ async def change_password(
             content={"error": f"Error changing password: {str(e)}"}
         )
 
+# Conversations endpoints
+@app.post("/api/conversations/new")
+async def new_conversation():
+    """Create a new conversation."""
+    try:
+        conversation_repo = repository_factory.conversation_repository
+        conversation_id = await conversation_repo.create_new_conversation()
+        
+        if not conversation_id:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to create new conversation"}
+            )
+        
+        return {"conversation_id": conversation_id}
+    except Exception as e:
+        logger.error(f"Error creating conversation: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to create conversation: {str(e)}"}
+        )
+
+@app.get("/api/conversations")
+async def get_conversations():
+    """Returns a list of available conversations for the sidebar."""
+    try:
+        conversation_repo = repository_factory.conversation_repository
+        conversations = await conversation_repo.get_conversation_list()
+        return {"conversations": conversations}
+    except Exception as e:
+        logger.error(f"Error getting conversations: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to load conversations: {str(e)}"}
+        )
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get a specific conversation with its messages."""
+    try:
+        logger.info(f"Retrieving conversation: {conversation_id}")
+        
+        conversation_repo = repository_factory.conversation_repository
+        
+        # Get the conversation
+        conversation = await conversation_repo.find_by_id(conversation_id)
+        
+        if not conversation:
+            logger.warning(f"Conversation not found: {conversation_id}")
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Conversation not found: {conversation_id}"}
+            )
+        
+        # Convert message objects to dictionaries if they're not already
+        messages = []
+        for msg in conversation.messages:
+            if isinstance(msg, dict):
+                messages.append(msg)
+            else:
+                # If it's a Pydantic model
+                messages.append(msg.dict())
+        
+        # Return in the format expected by frontend
+        return {
+            "conversation_id": conversation.id,
+            "messages": messages,
+            "preview": conversation.preview,
+            "last_updated": conversation.last_updated.isoformat() if hasattr(conversation.last_updated, "isoformat") else conversation.last_updated
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving conversation: {str(e)}")
+        return JSONResponse(
+            status_code=500, 
+            content={"error": f"Failed to retrieve conversation: {str(e)}"}
+        )
+
+@app.post("/api/conversations/save")
+async def save_conversation(data: dict):
+    """Save a conversation with proper field handling."""
+    try:
+        conversation_repo = repository_factory.conversation_repository
+        
+        conv_id = data.get("conversation_id")
+        if not conv_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "conversation_id is required"}
+            )
+        
+        logger.info(f"Saving conversation: {conv_id}")
+        
+        # Ensure all required fields exist
+        if "messages" not in data and "history" in data:
+            # Convert history to messages (frontend may use different field names)
+            data["messages"] = data.pop("history")
+        elif "messages" not in data:
+            # Ensure messages exists
+            data["messages"] = []
+            
+        # Ensure preview exists
+        if not data.get("preview"):
+            data["preview"] = "New Conversation"
+            
+        # Ensure last_updated exists
+        if not data.get("last_updated"):
+            data["last_updated"] = datetime.utcnow()
+        
+        # Check if conversation exists
+        existing = await conversation_repo.find_by_id(conv_id)
+        
+        if existing:
+            # Update existing conversation
+            update_data = {
+                "messages": data.get("messages", []),
+                "preview": data.get("preview", "Conversation"),
+                "last_updated": data.get("last_updated", datetime.utcnow())
+            }
+            
+            success = await conversation_repo.update(conv_id, update_data)
+            if not success:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": f"Failed to update conversation {conv_id}"}
+                )
+        else:
+            # Create new conversation
+            # Use the Conversation model directly
+            from app.database.models import Conversation
+            
+            conversation = Conversation(
+                id=conv_id,
+                messages=data.get("messages", []),
+                preview=data.get("preview", "New Conversation"),
+                last_updated=data.get("last_updated", datetime.utcnow())
+            )
+            
+            result = await conversation_repo.create(conversation)
+            if not result:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Failed to create conversation"}
+                )
+        
+        logger.info(f"Successfully saved conversation: {conv_id}")
+        return {"status": "saved"}
+    except Exception as e:
+        logger.error(f"Error saving conversation: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to save conversation: {str(e)}"}
+        )
+    
+@app.post("/api/conversations/clear")
+async def clear_conversations():
+    """Clear all conversations."""
+    try:
+        logger.info("Clearing all conversations")
+        
+        conversation_repo = repository_factory.conversation_repository
+        
+        # Get all conversations
+        conversations = await conversation_repo.find({})
+        
+        # Delete each conversation
+        success = True
+        for conversation in conversations:
+            result = await conversation_repo.delete(conversation.id)
+            if not result:
+                success = False
+        
+        if success:
+            logger.info("Successfully cleared all conversations")
+            return {"message": "All conversations cleared successfully"}
+        else:
+            logger.error("Failed to clear some conversations")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to clear all conversations"}
+            )
+    except Exception as e:
+        logger.error(f"Error clearing conversations: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to clear conversations: {str(e)}"}
+        )
+    
 # Document sharing endpoints
 @app.post("/api/documents/share", dependencies=[Depends(get_db)])
 async def share_document(
@@ -1132,59 +1239,31 @@ async def get_knowledge_graph_stats(user_id: Optional[str] = Form(None)):
             content={"error": f"Error getting knowledge graph stats: {str(e)}"}
         )
 
-# Add endpoint for logs access (useful for debugging)
 @app.get("/api/logs")
 async def get_logs():
-    """Get a list of log files."""
+    """Get a list of all log files."""
     try:
-        logs_dir = Path(logs_dir)
-        log_files = []
-        
-        for file_path in logs_dir.glob("*.log"):
-            log_files.append({
-                "filename": file_path.name,
-                "size": file_path.stat().st_size,
-                "modified": file_path.stat().st_mtime
-            })
-        
-        return {"logs": log_files}
+        log_repo = repository_factory.log_repository
+        logs = await log_repo.get_log_files()
+        return {"logs": logs}
     except Exception as e:
         logger.error(f"Error getting log files: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error getting log files: {str(e)}"}
-        )
+        return {"error": f"Error getting log files: {str(e)}"}
 
 @app.get("/api/logs/{filename}")
 async def get_log_content(filename: str):
     """Get the content of a specific log file."""
     try:
-        file_path = Path(logs_dir) / filename
+        log_repo = repository_factory.log_repository
+        content = await log_repo.get_log_content(filename)
         
-        if not file_path.exists() or not file_path.is_file():
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Log file not found: {filename}"}
-            )
-        
-        # Check that it's a log file
-        if not filename.endswith(".log"):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Invalid log file"}
-            )
-        
-        # Read the file
-        with open(file_path, "r") as f:
-            content = f.read()
-        
-        return {"filename": filename, "content": content}
+        return {
+            "filename": filename,
+            "content": content
+        }
     except Exception as e:
-        logger.error(f"Error reading log file: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error reading log file: {str(e)}"}
-        )
+        logger.error(f"Error reading log file {filename}: {str(e)}")
+        return {"error": f"Error reading log file: {str(e)}"}
 
 @app.post("/api/rebuild_index", dependencies=[Depends(get_db)])
 async def rebuild_faiss_index():

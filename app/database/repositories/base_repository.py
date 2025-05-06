@@ -23,7 +23,8 @@ class BaseRepository(Generic[T]):
             collection_name: Name of the MongoDB collection
             model_class: Pydantic model class for type validation
         """
-        self.db = mongodb_config.get_database()
+        client = mongodb_config.get_async_client()
+        self.db = client[mongodb_config.database_name]
         self.collection = self.db[collection_name]
         self.model_class = model_class
         logger.info(f"Initialized repository for collection: {collection_name}")
@@ -85,14 +86,18 @@ class BaseRepository(Generic[T]):
         Create a new document.
         
         Args:
-            item: Document to create
+            item: Document to create (Pydantic model or dict)
             
         Returns:
             Document ID if successful, None otherwise
         """
         try:
-            # Convert Pydantic model to dict
-            item_dict = item.dict()
+            # Convert Pydantic model to dict if it's not already a dict
+            if hasattr(item, 'dict'):
+                item_dict = item.dict()
+            else:
+                # If it's already a dictionary, use it as is
+                item_dict = dict(item)
             
             # Handle ID field (use provided id as _id)
             if "id" in item_dict:
@@ -101,7 +106,7 @@ class BaseRepository(Generic[T]):
             # Insert document
             result = await self.collection.insert_one(item_dict)
             
-            if result.inserted_id:
+            if result and result.inserted_id:
                 logger.info(f"Created document with ID: {result.inserted_id}")
                 return str(result.inserted_id)
             
@@ -131,7 +136,7 @@ class BaseRepository(Generic[T]):
                 {"$set": item}
             )
             
-            if result.modified_count > 0:
+            if result and result.modified_count > 0:
                 logger.info(f"Updated document with ID: {id}")
                 return True
             
@@ -154,7 +159,7 @@ class BaseRepository(Generic[T]):
         try:
             result = await self.collection.delete_one({"_id": id})
             
-            if result.deleted_count > 0:
+            if result and result.deleted_count > 0:
                 logger.info(f"Deleted document with ID: {id}")
                 return True
             
@@ -175,6 +180,7 @@ class BaseRepository(Generic[T]):
             Document count
         """
         try:
+            # Make sure to await the count operation
             return await self.collection.count_documents(query or {})
         except Exception as e:
             logger.error(f"Error counting documents: {str(e)}")

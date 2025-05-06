@@ -363,10 +363,38 @@ class SyncHybridVectorStore:
         self.async_store = HybridVectorStore()
         self.documents = []  # Cache for compatibility
         self.document_embeddings = []  # Cache for compatibility
+        self.index_initialized = False
         logger.info("Initialized synchronous Hybrid vector store wrapper")
         
-        # Initialize FAISS index
-        asyncio.run(self.async_store.initialize_faiss_index())
+        # Don't initialize FAISS index in constructor
+        # We'll do it lazily when needed
+    
+    def _ensure_index_initialized(self):
+        """Ensure the FAISS index is initialized."""
+        if not self.index_initialized:
+            # Try to get the current event loop
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                # If no event loop exists in this thread, create a new one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # Run the initialization
+            if loop.is_running():
+                # If we're already in an event loop (e.g., inside FastAPI)
+                # Create a future and run it in the background
+                future = asyncio.run_coroutine_threadsafe(
+                    self.async_store.initialize_faiss_index(),
+                    loop
+                )
+                # Wait for the result with a timeout
+                future.result(timeout=30)
+            else:
+                # If no event loop is running, we can use run_until_complete
+                loop.run_until_complete(self.async_store.initialize_faiss_index())
+            
+            self.index_initialized = True
     
     def add_document(self, document: Dict[str, Any]) -> None:
         """
@@ -375,25 +403,84 @@ class SyncHybridVectorStore:
         Args:
             document: Document data
         """
-        # Run async function in sync context
-        asyncio.run(self.async_store.add_document(document))
+        # Ensure the index is initialized
+        self._ensure_index_initialized()
+        
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If no event loop exists in this thread, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.async_store.add_document(document),
+                loop
+            )
+            future.result(timeout=30)
+        else:
+            # If no event loop is running
+            loop.run_until_complete(self.async_store.add_document(document))
         
         # Update cache for compatibility
         self._refresh_cache()
     
     def clear(self) -> None:
         """Clear all documents from the vector store."""
-        # Run async function in sync context
-        asyncio.run(self.async_store.clear())
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If no event loop exists in this thread, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.async_store.clear(),
+                loop
+            )
+            future.result(timeout=30)
+        else:
+            # If no event loop is running
+            loop.run_until_complete(self.async_store.clear())
         
         # Clear cache
         self.documents = []
         self.document_embeddings = []
+        self.index_initialized = False
     
     def save(self) -> None:
         """Save the vector store (in this implementation, rebuilds FAISS index)."""
-        # Save by rebuilding the index
-        asyncio.run(self.async_store._update_faiss_index())
+        # Ensure the index is initialized
+        self._ensure_index_initialized()
+        
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If no event loop exists in this thread, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.async_store._update_faiss_index(),
+                loop
+            )
+            future.result(timeout=30)
+        else:
+            # If no event loop is running
+            loop.run_until_complete(self.async_store._update_faiss_index())
+        
         logger.info("Vector store saved (FAISS index rebuilt)")
     
     def get_documents(self) -> List[Dict[str, Any]]:
@@ -420,8 +507,28 @@ class SyncHybridVectorStore:
         Returns:
             List of relevant documents with scores
         """
-        # Run async function in sync context
-        return asyncio.run(self.async_store.query(query_text, top_k))
+        # Ensure the index is initialized
+        self._ensure_index_initialized()
+        
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If no event loop exists in this thread, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.async_store.query(query_text, top_k),
+                loop
+            )
+            return future.result(timeout=30)
+        else:
+            # If no event loop is running
+            return loop.run_until_complete(self.async_store.query(query_text, top_k))
     
     def get_document_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -433,8 +540,25 @@ class SyncHybridVectorStore:
         Returns:
             Document if found, None otherwise
         """
-        # Run async function in sync context
-        return asyncio.run(self.async_store.get_document_by_id(doc_id))
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If no event loop exists in this thread, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.async_store.get_document_by_id(doc_id),
+                loop
+            )
+            return future.result(timeout=30)
+        else:
+            # If no event loop is running
+            return loop.run_until_complete(self.async_store.get_document_by_id(doc_id))
     
     def get_document_by_filename(self, filename: str) -> Optional[Dict[str, Any]]:
         """
@@ -446,13 +570,48 @@ class SyncHybridVectorStore:
         Returns:
             Document if found, None otherwise
         """
-        # Run async function in sync context
-        return asyncio.run(self.async_store.get_document_by_filename(filename))
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If no event loop exists in this thread, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.async_store.get_document_by_filename(filename),
+                loop
+            )
+            return future.result(timeout=30)
+        else:
+            # If no event loop is running
+            return loop.run_until_complete(self.async_store.get_document_by_filename(filename))
     
     def _refresh_cache(self) -> None:
         """Refresh the document cache for compatibility."""
-        self.documents = asyncio.run(self.async_store.get_documents())
-
+        # Try to get the current event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # If no event loop exists in this thread, create a new one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an event loop
+            future = asyncio.run_coroutine_threadsafe(
+                self.async_store.get_documents(),
+                loop
+            )
+            self.documents = future.result(timeout=30)
+        else:
+            # If no event loop is running
+            self.documents = loop.run_until_complete(self.async_store.get_documents())
+            
 # Factory function
 def create_hybrid_vector_store():
     """Create a hybrid vector store instance."""

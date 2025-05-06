@@ -10,6 +10,7 @@ from app.database.repositories.embedding_repository import EmbeddingRepository
 from app.database.repositories.conversation_repository import ConversationRepository
 from app.database.repositories.user_repository import UserRepository
 from app.database.repositories.knowledge_graph_repository import KnowledgeGraphRepository
+from app.database.repositories.log_repository import LogRepository
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,8 @@ class RepositoryFactory:
             "embedding": EmbeddingRepository,
             "conversation": ConversationRepository,
             "user": UserRepository,
-            "knowledge_graph": KnowledgeGraphRepository
+            "knowledge_graph": KnowledgeGraphRepository,
+            "log": LogRepository
         }
         logger.info("Repository factory initialized")
     
@@ -74,5 +76,9 @@ class RepositoryFactory:
         """Get the knowledge graph repository."""
         return self.get_repository("knowledge_graph")
 
+    @property
+    def log_repository(self) -> LogRepository:
+        """Get the log repository."""
+        return self.get_repository("log")
 # Create a singleton instance
 repository_factory = RepositoryFactory()

@@ -7,6 +7,7 @@ from typing import Optional
 from pymongo import MongoClient
 from pymongo.database import Database
 from motor.motor_asyncio import AsyncIOMotorClient
+from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class MongoDBConfig:
         self.embeddings_collection = "embeddings"
         self.conversations_collection = "conversations"
         self.knowledge_graph_collection = "knowledge_graph"
+        self.logs_collection = "logs"
         
         logger.info(f"MongoDB configuration initialized for database: {self.database_name}")
     
@@ -41,7 +43,9 @@ class MongoDBConfig:
     def connection_string(self) -> str:
         """Get MongoDB connection string with proper authentication."""
         if self.username and self.password:
-            return f"mongodb://{self.username}:{self.password}@{self.host}:{self.port}/{self.database_name}?authSource={self.auth_source}"
+            user = quote_plus(self.username)
+            pwd = quote_plus(self.password)
+            return f"mongodb://{user}:{pwd}@{self.host}:{self.port}/{self.database_name}?authSource={self.auth_source}"
         else:
             return f"mongodb://{self.host}:{self.port}/{self.database_name}"
     

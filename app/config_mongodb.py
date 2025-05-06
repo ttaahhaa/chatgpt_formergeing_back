@@ -4,6 +4,7 @@ Configuration settings for the Document QA Assistant with MongoDB support.
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Union
+import urllib.parse
 
 # Base directory of the project
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -70,15 +71,17 @@ class Config:
     # Ollama settings
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     
-    # MongoDB connection string
     @property
-    def mongodb_connection_string(self) -> str:
-        """Get MongoDB connection string."""
-        if self.MONGODB_USERNAME and self.MONGODB_PASSWORD:
-            return f"mongodb://{self.MONGODB_USERNAME}:{self.MONGODB_PASSWORD}@{self.MONGODB_HOST}:{self.MONGODB_PORT}/{self.MONGODB_DATABASE}?authSource={self.MONGODB_AUTH_SOURCE}"
+    def connection_string(self) -> str:
+        """Get MongoDB connection string with proper authentication."""
+        if self.username and self.password:
+            # URL encode username and password
+            encoded_username = urllib.parse.quote_plus(self.username)
+            encoded_password = urllib.parse.quote_plus(self.password)
+            return f"mongodb://{encoded_username}:{encoded_password}@{self.host}:{self.port}/{self.database_name}?authSource={self.auth_source}"
         else:
-            return f"mongodb://{self.MONGODB_HOST}:{self.MONGODB_PORT}/{self.MONGODB_DATABASE}"
-    
+            return f"mongodb://{self.host}:{self.port}/{self.database_name}"
+        
     @classmethod
     def create_directories(cls) -> None:
         """Create necessary directories if they don't exist."""

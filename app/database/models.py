@@ -82,17 +82,27 @@ class ConversationMessage(BaseModel):
     """Individual message in a conversation."""
     role: str  # "user" or "assistant"
     content: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v)
+        }
 
 class Conversation(BaseModel):
     """Conversation model for storing chat history."""
     id: str  # Unique conversation ID
     owner_id: Optional[str] = None  # Owner user ID
-    messages: List[ConversationMessage] = []
+    messages: List[Dict[str, Any]] = []  # Changed from List[ConversationMessage] to List[Dict]
     preview: str = "New Conversation"  # Preview/title for UI
-    last_updated: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v)
+        }
         schema_extra = {
             "example": {
                 "id": "conv_12345",
@@ -114,6 +124,30 @@ class Conversation(BaseModel):
             }
         }
 
+class Log(BaseModel):
+    """Log entry model for storing application logs."""
+    id: str
+    level: str  # ERROR, WARNING, INFO, DEBUG
+    message: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    source: str = "application"
+    metadata: Dict[str, Any] = {}
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": "log_12345",
+                "level": "INFO",
+                "message": "Application started",
+                "timestamp": "2025-04-29T15:19:56",
+                "source": "application",
+                "metadata": {
+                    "user_id": "user_123",
+                    "ip": "127.0.0.1"
+                }
+            }
+        }
+        
 class KnowledgeGraphNode(BaseModel):
     """Node in the knowledge graph."""
     id: str  # Unique node ID
