@@ -304,7 +304,6 @@ async def query(request: QueryRequest):
             request.query, 
             results
         )
-        
         # Save to conversation if ID provided
         if request.conversation_id:
             # Add user message
@@ -803,6 +802,10 @@ async def save_conversation(data: dict):
         # Ensure last_updated exists
         if not data.get("last_updated"):
             data["last_updated"] = datetime.utcnow()
+        print("----------------------------------------------------------------------------------------")
+        print(conv_id)
+        print(type(conv_id))
+        print("----------------------------------------------------------------------------------------")
         
         # Check if conversation exists
         existing = await conversation_repo.find_by_id(conv_id)
