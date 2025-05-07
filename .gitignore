@@ -32,6 +32,7 @@ data/
 logs/
 conversations/
 cache/
+python_packages/
 
 # IDE files
 .idea/
@@ -43,3 +44,6 @@ cache/
 # OS specific
 .DS_Store
 Thumbs.db
+
+# specific files
+app/solve_ids_problem.py
