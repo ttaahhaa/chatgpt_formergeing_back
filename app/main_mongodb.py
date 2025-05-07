@@ -344,6 +344,7 @@ async def chat(request: dict):
         # Extract message and conversation ID from request
         message = request.get("message", "")
         conversation_id = request.get("conversation_id")
+        mode = request.get("mode", "auto")  # Get the mode parameter
         
         if not message:
             return JSONResponse(
@@ -378,8 +379,21 @@ async def chat(request: dict):
                             "content": msg.content
                         })
         
-        # Generate response
-        response = llm.generate_response(message, conversation_context)
+        # Determine if we should use documents based on the mode
+        use_documents = mode == "documents_only" or mode == "auto"
+        
+        if use_documents:
+            # Retrieve relevant documents using the vector store
+            relevant_docs = await app.state.vector_store.async_store.query(message, top_k=5)
+            
+            # Generate response with document context
+            response_with_sources = llm.query_with_sources(message, relevant_docs)
+            response = response_with_sources["response"]
+            sources = response_with_sources["sources"]
+        else:
+            # Just use the LLM without document context
+            response = llm.generate_response(message, conversation_context)
+            sources = []
         
         # Save the conversation if conversation_id is provided
         if conversation_id:
@@ -394,7 +408,8 @@ async def chat(request: dict):
             assistant_message = {
                 "role": "assistant",
                 "content": response,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "sources": sources if sources else None
             }
             
             # Add messages to conversation
@@ -432,6 +447,7 @@ async def chat(request: dict):
         # Return response
         return {
             "response": response,
+            "sources": sources,
             "conversation_id": conversation_id
         }
     except Exception as e:
@@ -440,7 +456,7 @@ async def chat(request: dict):
             status_code=500,
             content={"error": f"Chat processing error: {str(e)}"}
         )
-
+    
 @app.post("/api/clear_documents", dependencies=[Depends(get_db)])
 async def clear_documents():
     """Clear all documents from the system."""
