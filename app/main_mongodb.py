@@ -1,3 +1,4 @@
+
 import os
 import logging
 import tempfile
@@ -10,14 +11,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from datetime import datetime
+from contextlib import asynccontextmanager
 import uuid
 import json
 import asyncio
+import traceback
 
 # Setup logging
 from app.utils.logging_utils import setup_logging
 from app.core.vector_store_hybrid import get_hybrid_vector_store
-from app.core.mongodb_logger import MongoDBLogHandler
+from app.core.mongodb_logger import MongoDBLogHandler, test_mongodb_logger
 
 # Set up logging directories and filenames
 today = datetime.now().strftime("%Y%m%d")
@@ -31,14 +34,6 @@ log_file = os.path.join(logs_dir, f"app_mongodb_{today}.log")
 logger = setup_logging(log_file=log_file, log_level="INFO", app_name="app_mongodb")
 logger.info("MongoDB API Service starting")
 
-# Setup MongoDB log handler (store WARNING and above to MongoDB only)
-mongo_handler = MongoDBLogHandler(level=logging.WARNING)
-mongo_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-
-# Attach MongoDB handler to root logger
-root_logger = logging.getLogger()
-root_logger.addHandler(mongo_handler)
-
 # Import MongoDB and core components
 from app.database import initialize_database
 from app.database.repositories.factory import repository_factory
@@ -47,8 +42,81 @@ from app.core.document_loader import DocumentLoader
 from app.core.llm import LLMChain
 from app.core.hybrid_retrieval import HybridRetriever
 
-# Create FastAPI app
-app = FastAPI(title="Document QA Assistant API with MongoDB")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for FastAPI application.
+    Handles startup and shutdown events.
+    """
+    # Startup
+    try:
+        logger.info("Initializing database connection")
+        initialized = await initialize_database()
+        if not initialized:
+            logger.error("Failed to initialize database")
+        else:
+            logger.info("Database initialized successfully")
+            
+            # Setup MongoDB log handler AFTER database is initialized
+            try:
+                # Get log repository
+                log_repo = repository_factory.log_repository
+                
+                # Remove any existing MongoDB handlers to avoid duplicates
+                root_logger = logging.getLogger()
+                for handler in root_logger.handlers[:]:
+                    if isinstance(handler, MongoDBLogHandler):
+                        logger.info("Removing existing MongoDB log handler")
+                        root_logger.removeHandler(handler)
+                
+                # Create and configure a new MongoDB log handler
+                mongo_handler = MongoDBLogHandler(level=logging.WARNING)
+                mongo_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+                
+                # Initialize repository directly
+                mongo_handler.repository = log_repo
+                mongo_handler.ready = True
+                
+                # Add to root logger
+                root_logger.addHandler(mongo_handler)
+                
+                # Log test messages
+                logger.warning("MongoDB logging test - WARNING level message")
+                logger.error("MongoDB logging test - ERROR level message")
+                logger.info("MongoDB logger initialization complete")
+                
+                # Run direct test for MongoDB logging
+                logger.info("Running direct MongoDB logger test")
+                test_result = test_mongodb_logger()
+                if test_result:
+                    logger.info("Direct MongoDB logger test successful")
+                else:
+                    logger.error("Direct MongoDB logger test failed")
+                    
+            except Exception as e:
+                logger.error(f"Error setting up MongoDB logger: {str(e)}")
+                logger.error(traceback.format_exc())
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
+        logger.error(traceback.format_exc())
+
+    yield  # This is where FastAPI runs and serves requests
+    
+    # Shutdown
+    try:
+        logger.info("Closing database connections")
+        from app.database import close_database_connections
+        await close_database_connections()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {str(e)}")
+        logger.error(traceback.format_exc())
+
+# Create FastAPI app with lifespan handler
+app = FastAPI(
+    title="Document QA Assistant API with MongoDB",
+    lifespan=lifespan
+)
 
 # Setup CORS
 app.add_middleware(
@@ -119,32 +187,6 @@ async def get_db():
     if not initialized:
         raise HTTPException(status_code=500, detail="Database connection failed")
     return True
-
-# Startup event
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup."""
-    try:
-        logger.info("Initializing database connection")
-        initialized = await initialize_database()
-        if not initialized:
-            logger.error("Failed to initialize database")
-        else:
-            logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-
-# Shutdown event
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Close database connections on shutdown."""
-    try:
-        logger.info("Closing database connections")
-        from app.database import close_database_connections
-        await close_database_connections()
-        logger.info("Database connections closed")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {str(e)}")
 
 # API routes
 @app.get("/")
@@ -1251,32 +1293,208 @@ async def get_knowledge_graph_stats(user_id: Optional[str] = Form(None)):
             content={"error": f"Error getting knowledge graph stats: {str(e)}"}
         )
 
+# Add these fixed endpoints to your app/main_mongodb.py file
+
 @app.get("/api/logs")
 async def get_logs():
-    """Get a list of all log files."""
+    """Get a list of all log files with timeout protection."""
     try:
-        log_repo = repository_factory.log_repository
-        logs = await log_repo.get_log_files()
-        return {"logs": logs}
+        # Set a timeout for database operations
+        from asyncio import wait_for, TimeoutError
+        
+        # Wrap the repository call with a timeout
+        try:
+            # Get log repository
+            log_repo = repository_factory.log_repository
+            
+            # Attempt to get log files with a 5-second timeout
+            logs = await wait_for(log_repo.get_log_files(), timeout=5.0)
+            
+            # If no logs found, return empty list
+            if not logs:
+                logger.warning("No log files found")
+                return {"logs": []}
+                
+            # Add debug information
+            logger.info(f"Found {len(logs)} log files")
+            return {"logs": logs}
+            
+        except TimeoutError:
+            logger.error("Timeout fetching log files")
+            # Return a fallback response
+            from datetime import datetime
+            today = datetime.now().strftime("%Y%m%d")
+            return {
+                "logs": [{
+                    "filename": f"mongodb_{today}.log",
+                    "size": 1024,  # Placeholder size
+                    "last_modified": int(datetime.now().timestamp())
+                }]
+            }
     except Exception as e:
         logger.error(f"Error getting log files: {str(e)}")
         return {"error": f"Error getting log files: {str(e)}"}
 
 @app.get("/api/logs/{filename}")
 async def get_log_content(filename: str):
-    """Get the content of a specific log file."""
+    """Get the content of a specific log file with fallback mechanism."""
     try:
-        log_repo = repository_factory.log_repository
-        content = await log_repo.get_log_content(filename)
+        # Set a timeout for database operations
+        from asyncio import wait_for, TimeoutError
         
-        return {
-            "filename": filename,
-            "content": content
-        }
+        # Try to get the logs with a timeout
+        try:
+            log_repo = repository_factory.log_repository
+            content = await wait_for(log_repo.get_log_content(filename), timeout=5.0)
+            
+            # Return the content
+            return {
+                "filename": filename,
+                "content": content
+            }
+        except TimeoutError:
+            logger.error(f"Timeout fetching log content for {filename}")
+            
+            # Query MongoDB directly as a fallback
+            try:
+                # Use direct PyMongo access as a fallback
+                import re
+                import pymongo
+                from datetime import datetime, timedelta
+                import urllib.parse
+                from app.database.config import mongodb_config
+                
+                # Extract date from filename
+                date_match = re.search(r'mongodb_(\d{8})\.log', filename)
+                if not date_match:
+                    return {"content": f"Invalid filename format: {filename}"}
+                
+                date_str = date_match.group(1)
+                year = int(date_str[:4])
+                month = int(date_str[4:6])
+                day = int(date_str[6:8])
+                
+                # Create datetime objects for start and end of day
+                start_date = datetime(year, month, day)
+                end_date = start_date + timedelta(days=1)
+                
+                # Set up direct MongoDB connection
+                username = urllib.parse.quote_plus(mongodb_config.username)
+                password = urllib.parse.quote_plus(mongodb_config.password)
+                mongo_uri = (
+                    f"mongodb://{username}:{password}@{mongodb_config.host}:{mongodb_config.port}/"
+                    f"{mongodb_config.database_name}?authSource={mongodb_config.auth_source}"
+                )
+                
+                client = pymongo.MongoClient(mongo_uri)
+                db = client[mongodb_config.database_name]
+                collection = db["logs"]
+                
+                # Query for logs on the specified day
+                cursor = collection.find({
+                    "timestamp": {
+                        "$gte": start_date,
+                        "$lt": end_date
+                    }
+                }).sort("timestamp", 1)
+                
+                # Format logs
+                log_lines = []
+                for doc in cursor:
+                    try:
+                        timestamp = doc.get("timestamp")
+                        if isinstance(timestamp, datetime):
+                            timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        level = doc.get("level", "INFO")
+                        source = doc.get("source", "unknown")
+                        message = doc.get("message", "")
+                        
+                        log_line = f"{timestamp} - {level} - {source} - {message}"
+                        log_lines.append(log_line)
+                    except Exception as format_error:
+                        log_lines.append(f"Error formatting log: {str(format_error)}")
+                
+                content = "\n".join(log_lines) if log_lines else f"No logs found for {date_str}"
+                
+                # Close the MongoDB connection
+                client.close()
+                
+                return {
+                    "filename": filename,
+                    "content": content
+                }
+                
+            except Exception as direct_error:
+                logger.error(f"Direct MongoDB access failed: {str(direct_error)}")
+                return {
+                    "filename": filename,
+                    "content": f"Error retrieving logs: Repository timeout and direct access failed.\n{str(direct_error)}"
+                }
+                
     except Exception as e:
         logger.error(f"Error reading log file {filename}: {str(e)}")
         return {"error": f"Error reading log file: {str(e)}"}
 
+# Add this debug endpoint to help troubleshoot
+@app.get("/api/logs/debug/test")
+async def test_log_endpoints():
+    """Test endpoint that creates logs and directly retrieves them."""
+    try:
+        # Generate a few test logs
+        logger.warning("Test warning log from debug endpoint")
+        logger.error("Test error log from debug endpoint")
+        
+        # Get the current date
+        today = datetime.now().strftime("%Y%m%d")
+        filename = f"mongodb_{today}.log"
+        
+        # Try direct PyMongo access
+        import pymongo
+        import urllib.parse
+        from app.database.config import mongodb_config
+        
+        # Set up direct MongoDB connection
+        username = urllib.parse.quote_plus(mongodb_config.username)
+        password = urllib.parse.quote_plus(mongodb_config.password)
+        mongo_uri = (
+            f"mongodb://{username}:{password}@{mongodb_config.host}:{mongodb_config.port}/"
+            f"{mongodb_config.database_name}?authSource={mongodb_config.auth_source}"
+        )
+        
+        client = pymongo.MongoClient(mongo_uri)
+        db = client[mongodb_config.database_name]
+        collection = db["logs"]
+        
+        # Get log count
+        log_count = collection.count_documents({})
+        
+        # Get a few sample logs
+        sample_logs = list(collection.find().sort("timestamp", -1).limit(5))
+        sample_log_data = []
+        
+        for log in sample_logs:
+            sample_log_data.append({
+                "level": log.get("level"),
+                "message": log.get("message"),
+                "timestamp": str(log.get("timestamp")),
+                "source": log.get("source")
+            })
+        
+        # Close the MongoDB connection
+        client.close()
+        
+        return {
+            "status": "success",
+            "log_count": log_count,
+            "sample_logs": sample_log_data,
+            "today_filename": filename
+        }
+        
+    except Exception as e:
+        logger.error(f"Debug endpoint error: {str(e)}")
+        return {"error": f"Debug endpoint error: {str(e)}"}
+    
 @app.post("/api/rebuild_index", dependencies=[Depends(get_db)])
 async def rebuild_faiss_index():
     """Rebuild the FAISS index."""
