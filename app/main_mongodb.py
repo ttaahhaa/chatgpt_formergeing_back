@@ -860,25 +860,18 @@ async def clear_conversations():
         
         conversation_repo = repository_factory.conversation_repository
         
-        # Get all conversations
-        conversations = await conversation_repo.find({})
+        # Use the MongoDB collection directly for a bulk delete operation
+        result = await conversation_repo.collection.delete_many({})
         
-        # Delete each conversation
-        success = True
-        for conversation in conversations:
-            result = await conversation_repo.delete(conversation.id)
-            if not result:
-                success = False
+        deleted_count = result.deleted_count
+        logger.info(f"Deleted {deleted_count} conversations")
         
-        if success:
-            logger.info("Successfully cleared all conversations")
-            return {"message": "All conversations cleared successfully"}
+        if deleted_count > 0:
+            return {"message": f"Successfully cleared {deleted_count} conversations"}
         else:
-            logger.error("Failed to clear some conversations")
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Failed to clear all conversations"}
-            )
+            logger.warning("No conversations found to clear")
+            return {"message": "No conversations found to clear"}
+            
     except Exception as e:
         logger.error(f"Error clearing conversations: {str(e)}")
         return JSONResponse(
