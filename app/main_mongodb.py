@@ -1,4 +1,3 @@
-
 import os
 import logging
 import tempfile
@@ -149,32 +148,76 @@ app.state.user_repo = repository_factory.user_repository
 
 # Create data models
 class QueryRequest(BaseModel):
+    """Request model for document queries.
+    
+    Attributes:
+        query: The search query text
+        conversation_id: Optional ID to link queries in a conversation
+        user_id: Optional ID of the user making the query
+    """
     query: str
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = None  
     user_id: Optional[str] = None
 
 class QueryResponse(BaseModel):
+    """Response model for document queries.
+    
+    Attributes:
+        response: The answer text generated from relevant documents
+        sources: Optional list of source documents used to generate the answer
+        conversation_id: Optional ID linking to the original conversation
+    """
     response: str
     sources: Optional[List[Dict[str, Any]]] = None
     conversation_id: Optional[str] = None
 
 class ChatRequest(BaseModel):
+    """Request model for chat messages.
+    
+    Attributes:
+        message: The chat message text
+        conversation_id: Optional ID to link messages in a conversation
+        user_id: Optional ID of the user sending the message
+        mode: Chat mode - auto (default), documents_only, or general_knowledge
+    """
     message: str
     conversation_id: Optional[str] = None
     user_id: Optional[str] = None
     mode: Optional[str] = "auto"  # auto, documents_only, general_knowledge
 
 class ChatResponse(BaseModel):
+    """Response model for chat messages.
+    
+    Attributes:
+        response: The generated chat response text
+        sources: Optional list of source documents used in the response
+        conversation_id: Optional ID linking to the conversation
+    """
     response: str
     sources: Optional[List[Dict[str, Any]]] = None
     conversation_id: Optional[str] = None
 
 class UserRequest(BaseModel):
+    """Request model for user registration/creation.
+    
+    Attributes:
+        username: User's chosen username
+        email: User's email address
+        password: User's password
+    """
     username: str
     email: str
     password: str
 
 class UserResponse(BaseModel):
+    """Response model for user data.
+    
+    Attributes:
+        id: Unique identifier for the user
+        username: User's username
+        email: User's email address
+        role: User's role/permission level
+    """
     id: str
     username: str
     email: str
@@ -196,7 +239,18 @@ async def root():
 
 @app.get("/api/status", dependencies=[Depends(get_db)])
 async def get_status():
-    """Get system status information."""
+    """Get system status information.
+    
+    This endpoint collects and returns various system status metrics:
+    1. Document count from MongoDB
+    2. LLM (Language Model) availability status and current model
+    3. Embedding model status
+    4. MongoDB statistics (docs, embeddings, conversations)
+    5. System information (OS, memory usage, Python version)
+    
+    Returns:
+        JSON with status metrics or error response
+    """
     try:
         logger.info("Retrieving system status")
 
@@ -239,7 +293,7 @@ async def get_status():
 
         system_info = {
             "os": platform.system(),
-            "architecture": platform.machine(),
+            "architecture": platform.machine(), 
             "python_version": sys.version.split()[0],
             "app_version": "1.0.0"
         }
@@ -272,7 +326,22 @@ async def upload_document(
     file: UploadFile = File(...),
     user_id: Optional[str] = Form(None)
 ):
-    """Upload a document to the system."""
+    """Upload a document to the system.
+    
+    This endpoint handles document uploads by:
+    1. Saving the uploaded file to a temporary location
+    2. Loading and processing the document using DocumentLoader
+    3. Adding metadata like filename, owner ID, and unique document ID
+    4. Storing the document in MongoDB via VectorStore
+    5. Cleaning up temporary files
+    
+    Args:
+        file: The uploaded file
+        user_id: Optional user ID to associate with the document
+        
+    Returns:
+        Success message or error details
+    """
     try:
         logger.info(f"Uploading file: {file.filename}")
 
@@ -329,9 +398,15 @@ async def upload_document(
             content={"error": f"Error processing document: {str(e)}"}
         )
 
+
 @app.post("/api/query", response_model=QueryResponse, dependencies=[Depends(get_db)])
 async def query(request: QueryRequest):
-    """Query documents and get a response."""
+    """
+    DEPRECATED: This endpoint is deprecated and will be removed in a future version.
+    Please use /api/chat endpoint instead with mode="documents_only" for similar functionality.
+    """
+    logger.warning("The /api/query endpoint is deprecated. Please use /api/chat instead.")
+    
     try:
         logger.info(f"Processing query: {request.query}")
         
@@ -370,7 +445,13 @@ async def query(request: QueryRequest):
         )
         
         logger.info("Query processed successfully")
-        return response
+        return JSONResponse(
+            status_code=410,
+            content={
+                "warning": "This endpoint is deprecated. Please use /api/chat instead.",
+                "data": response.model_dump()
+            }
+        )
     
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
@@ -378,6 +459,7 @@ async def query(request: QueryRequest):
             status_code=500,
             content={"error": f"Error processing query: {str(e)}"}
         )
+
 
 @app.post("/api/chat")
 async def chat(request: dict):
@@ -416,10 +498,7 @@ async def chat(request: dict):
                             })
                     else:
                         # It's a Pydantic model, extract the fields
-                        conversation_context.append({
-                            "role": msg.role,
-                            "content": msg.content
-                        })
+                        conversation_context.append(msg.model_dump())
         
         # Determine if we should use documents based on the mode
         use_documents = mode == "documents_only" or mode == "auto"
@@ -534,7 +613,7 @@ async def get_documents(user_id: Optional[str] = None):
             documents = await app.state.document_repo.find({})
         
         # Convert to dictionary format
-        docs = [doc.dict() for doc in documents]
+        docs = [doc.model_dump() for doc in documents]
         
         return {"documents": docs}
     
@@ -814,7 +893,7 @@ async def get_conversation(conversation_id: str):
                 messages.append(msg)
             else:
                 # If it's a Pydantic model
-                messages.append(msg.dict())
+                messages.append(msg.model_dump())
         
         # Return in the format expected by frontend
         return {
@@ -1497,7 +1576,17 @@ async def test_log_endpoints():
     
 @app.post("/api/rebuild_index", dependencies=[Depends(get_db)])
 async def rebuild_faiss_index():
-    """Rebuild the FAISS index."""
+    """
+    Endpoint to rebuild the FAISS index used for vector similarity search.
+    
+    This endpoint:
+    1. Gets the async vector store from the app state
+    2. Forces a rebuild of the FAISS index by calling initialize_faiss_index()
+    3. Returns success/error message based on the rebuild result
+    
+    Returns:
+        JSON response with success message or error details
+    """
     try:
         # Get async store from sync wrapper
         async_store = app.state.vector_store.async_store
