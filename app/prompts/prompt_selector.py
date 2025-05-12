@@ -202,6 +202,10 @@ class PromptSelector:
         elif scores['step_by_step'] > 0.3:
             return EXAMPLE_PROMPTS["step_by_step_example"]
         elif scores['code'] > 0.3:
+            # Check if it's a programming question specifically
+            programming_keywords = ['code', 'function', 'program', 'script', 'python', 'javascript', 'java', 'c++']
+            if any(keyword in query.lower() for keyword in programming_keywords):
+                return EXAMPLE_PROMPTS["programming_example"]
             return EXAMPLE_PROMPTS["technical_example"]
         elif scores['general'] > 0.3:
             return EXAMPLE_PROMPTS["general_example"]

@@ -84,7 +84,13 @@ class LLMChain:
             payload = {
                 "model": self.model_name,
                 "prompt": prompt,
-                "stream": False
+                "stream": False,
+                "options": {
+                    "temperature": 0.2,      # Lower temperature for more focused responses
+                    "top_p": 0.9,            # Slightly reduce the token sampling for more reliable output
+                    "num_predict": 2048,     # Generate longer responses
+                    "num_ctx": 4096          # Increase context window
+                }
             }
             
             response = requests.post(url, json=payload)
@@ -111,7 +117,13 @@ class LLMChain:
             payload = {
                 "model": self.model_name,
                 "messages": messages,
-                "stream": False
+                "stream": False,
+                "options": {
+                    "temperature": 0.2,      # Lower temperature for more focused responses
+                    "top_p": 0.9,            # Slightly reduce the token sampling for more reliable output
+                    "num_predict": 2048,     # Generate longer responses
+                    "num_ctx": 4096          # Increase context window
+                }
             }
             
             response = requests.post(url, json=payload)

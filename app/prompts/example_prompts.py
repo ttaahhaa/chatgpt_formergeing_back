@@ -135,5 +135,100 @@ Try these steps in order, testing after each one:
 4. If problems persist:
    - Reset your router to factory settings
    - Check for overheating issues with your router
-   - Consider upgrading your router if it's more than 5 years old"""
+   - Consider upgrading your router if it's more than 5 years old""",
+
+    "programming_example": """
+When answering programming questions, follow these examples:
+
+Question: How do I read and write files in Python?
+Answer:
+Here's how to read and write files in Python:
+
+Reading a file:
+```python
+# Reading a whole file at once
+with open('filename.txt', 'r') as file:
+    content = file.read()
+    print(content)
+
+# Reading line by line
+with open('filename.txt', 'r') as file:
+    for line in file:
+        print(line.strip())
+```
+
+Writing to a file:
+```python
+# Writing a string to a file
+with open('filename.txt', 'w') as file:
+    file.write('Hello, World!')
+
+# Writing multiple lines
+with open('filename.txt', 'w') as file:
+    lines = ['First line', 'Second line', 'Third line']
+    file.write('\\n'.join(lines))
+```
+
+Note that:
+- 'r' mode is for reading
+- 'w' mode is for writing (overwrites existing content)
+- 'a' mode is for appending
+- Always use the 'with' statement to ensure files are properly closed
+- Add 'b' to the mode for binary files (e.g., 'rb', 'wb')
+
+Question: How do I make an HTTP request in JavaScript?
+Answer:
+Here are two ways to make HTTP requests in JavaScript:
+
+Using Fetch API (modern approach):
+```javascript
+// GET request
+fetch('https://api.example.com/data')
+  .then(response => {
+    if (!response.ok) {
+      throw new Error('Network response was not ok');
+    }
+    return response.json();
+  })
+  .then(data => {
+    console.log(data);
+  })
+  .catch(error => {
+    console.error('Error:', error);
+  });
+
+// POST request
+fetch('https://api.example.com/data', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    key1: 'value1',
+    key2: 'value2'
+  })
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));
+```
+
+Using XMLHttpRequest (older approach):
+```javascript
+// GET request
+const xhr = new XMLHttpRequest();
+xhr.open('GET', 'https://api.example.com/data', true);
+xhr.onload = function() {
+  if (xhr.status === 200) {
+    const data = JSON.parse(xhr.responseText);
+    console.log(data);
+  }
+};
+xhr.onerror = function() {
+  console.error('Request error');
+};
+xhr.send();
+```
+
+For modern applications, the Fetch API is recommended as it provides a more powerful and flexible feature set."""
 } 
