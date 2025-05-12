@@ -1,9 +1,10 @@
 """
-Configuration settings for the Document QA Assistant.
+Configuration settings for the Document QA Assistant with MongoDB support.
 """
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Union
+import urllib.parse
 
 # Base directory of the project
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -22,25 +23,30 @@ class Config:
     LOG_FORMAT: str = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     LOG_DIR: Path = BASE_DIR / "logs"
     
-    # Data directory settings
+    # Data directory settings (for backward compatibility)
     DATA_DIR: Path = BASE_DIR / "data"
     CACHE_DIR: Path = DATA_DIR / "cache"
     CONVERSATIONS_DIR: Path = DATA_DIR / "conversations"
     
-    # Vector store settings
-    VECTOR_STORE_TYPE: str = os.getenv("VECTOR_STORE_TYPE", "faiss")
-    VECTOR_STORE_PATH: Path = CACHE_DIR / "vector_store"
+    # MongoDB settings
+    MONGODB_HOST: str = os.getenv("MONGODB_HOST", "localhost")
+    MONGODB_PORT: int = int(os.getenv("MONGODB_PORT", "27017"))
+    MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "document_qa")
+    MONGODB_USERNAME: str = os.getenv("MONGODB_USERNAME", "")
+    MONGODB_PASSWORD: str = os.getenv("MONGODB_PASSWORD", "")
+    MONGODB_AUTH_SOURCE: str = os.getenv("MONGODB_AUTH_SOURCE", "admin")
     
-    # Embedding settings - using local AraberT model with relative path
-    # Using a path relative to the project root directory
+    # Vector store settings - using MongoDB
+    VECTOR_STORE_TYPE: str = os.getenv("VECTOR_STORE_TYPE", "mongodb")
+    
+    # Embedding settings - using local AraberT model
     EMBEDDING_MODEL_PATH: Path = BASE_DIR / "data" / "embeddings" / "arabert"
-    # Convert to string representation for compatibility
     EMBEDDING_MODEL_PATH_STR: str = str(EMBEDDING_MODEL_PATH)
-    EMBEDDING_DIMENSION: int = 768  # Will be updated based on actual model dimension when loaded
-    EMBEDDING_BATCH_SIZE: int = 16  # Smaller batch size for AraberT to avoid OOM
+    EMBEDDING_DIMENSION: int = 768
+    EMBEDDING_BATCH_SIZE: int = 16
     
     # LLM settings - using local Ollama with Mistral model
-    LLM_MODEL: str = "mistral:latest"
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "mistral:latest")
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 1024
     
@@ -53,13 +59,9 @@ class Config:
     TOP_K_RETRIEVAL: int = 5
     HYBRID_ALPHA: float = 0.5  # Weight between keyword and semantic search
     
-    # Cache settings
-    CACHE_ENABLED: bool = True
-    CACHE_TTL: int = 3600  # seconds
-    
     # API settings
     API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
-    API_PORT: int = int(os.getenv("API_PORT", "8000"))
+    API_PORT: int = int(os.getenv("API_PORT", "8001"))  # Different port for MongoDB version
     API_WORKERS: int = int(os.getenv("API_WORKERS", "1"))
     
     # UI settings
@@ -69,14 +71,24 @@ class Config:
     # Ollama settings
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     
+    @property
+    def connection_string(self) -> str:
+        """Get MongoDB connection string with proper authentication."""
+        if self.username and self.password:
+            # URL encode username and password
+            encoded_username = urllib.parse.quote_plus(self.username)
+            encoded_password = urllib.parse.quote_plus(self.password)
+            return f"mongodb://{encoded_username}:{encoded_password}@{self.host}:{self.port}/{self.database_name}?authSource={self.auth_source}"
+        else:
+            return f"mongodb://{self.host}:{self.port}/{self.database_name}"
+        
     @classmethod
     def create_directories(cls) -> None:
         """Create necessary directories if they don't exist."""
         cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
         cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cls.CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
-        cls.VECTOR_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-
+        cls.EMBEDDING_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Create an instance of the config
 config = Config()

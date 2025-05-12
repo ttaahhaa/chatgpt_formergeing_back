@@ -8,7 +8,7 @@ import numpy as np
 from collections import Counter
 
 from ..config import config
-from .vector_store import vector_store
+from .vector_store_hybrid import get_hybrid_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ class HybridRetriever:
             alpha: Weight balancing semantic (1.0) vs keyword (0.0) search
         """
         self.alpha = alpha
+        self.vector_store = get_hybrid_vector_store()
         logger.info(f"HybridRetriever initialized with alpha={alpha}")
     
     def _preprocess_query(self, query: str) -> str:
@@ -129,7 +130,7 @@ class HybridRetriever:
             List of relevant documents
         """
         # Semantic search via vector store
-        semantic_results = vector_store.query(query, top_k=k*2)  # Get more for re-ranking
+        semantic_results = self.vector_store.query(query, top_k=k*2)  # Get more for re-ranking
         
         if not semantic_results:
             logger.warning("No results from semantic search")
