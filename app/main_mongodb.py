@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse as FastAPIStreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -20,6 +20,7 @@ import traceback
 from app.utils.logging_utils import setup_logging
 from app.core.vector_store_hybrid import get_hybrid_vector_store
 from app.core.mongodb_logger import MongoDBLogHandler, test_mongodb_logger
+from app.core.llm_streaming import StreamingLLMChain, StreamingResponse
 
 # Set up logging directories and filenames
 today = datetime.now().strftime("%Y%m%d")
@@ -40,6 +41,7 @@ from app.core.vector_store_mongodb import get_vector_store
 from app.core.document_loader import DocumentLoader
 from app.core.llm import LLMChain
 from app.core.hybrid_retrieval import HybridRetriever
+from app.prompts import CODE_PROMPTS, GENERAL_PROMPTS, DOCUMENT_PROMPTS
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -132,12 +134,14 @@ document_loader = DocumentLoader()
 vector_store = get_hybrid_vector_store()
 llm_chain = LLMChain()
 retriever = HybridRetriever()
+streaming_llm = StreamingLLMChain()
 
 # Store components in app state
 app.state.document_loader = document_loader
 app.state.vector_store = vector_store
 app.state.llm_chain = llm_chain
 app.state.retriever = retriever
+app.state.streaming_llm = streaming_llm
 logger.info("Core components initialized successfully")
 
 # Get repositories
@@ -449,7 +453,7 @@ async def query(request: QueryRequest):
             status_code=410,
             content={
                 "warning": "This endpoint is deprecated. Please use /api/chat instead.",
-                "data": response.model_dump()
+                "data": response.dict()
             }
         )
     
@@ -498,7 +502,10 @@ async def chat(request: dict):
                             })
                     else:
                         # It's a Pydantic model, extract the fields
-                        conversation_context.append(msg.model_dump())
+                        conversation_context.append({
+                            "role": msg.role,
+                            "content": msg.content
+                        })
         
         # Determine if we should use documents based on the mode
         use_documents = mode == "documents_only" or mode == "auto"
@@ -507,13 +514,46 @@ async def chat(request: dict):
             # Retrieve relevant documents using the vector store
             relevant_docs = await app.state.vector_store.async_store.query(message, top_k=5)
             
+            # Get appropriate prompt based on document types
+            has_code = any(doc.get("filename", "").endswith(('.py', '.js', '.java', '.cpp', '.c', '.h', '.hpp', '.cs', '.go', '.rs', '.ts')) for doc in relevant_docs)
+            has_api = any("api" in doc.get("filename", "").lower() for doc in relevant_docs)
+            has_system = any("system" in doc.get("filename", "").lower() for doc in relevant_docs)
+            
+            if has_code:
+                system_prompt = DOCUMENT_PROMPTS["code_documentation"]
+            elif has_api:
+                system_prompt = DOCUMENT_PROMPTS["api_documentation"]
+            elif has_system:
+                system_prompt = DOCUMENT_PROMPTS["system_documentation"]
+            else:
+                system_prompt = DOCUMENT_PROMPTS["system"]
+            
             # Generate response with document context
-            response_with_sources = llm.query_with_sources(message, relevant_docs)
+            response_with_sources = llm.query_with_sources(message, relevant_docs, system_prompt)
             response = response_with_sources["response"]
             sources = response_with_sources["sources"]
         else:
+            # Check if it's a code-related question
+            code_extensions = {'.py', '.js', '.java', '.cpp', '.c', '.h', '.hpp', '.cs', '.go', '.rs', '.ts'}
+            error_keywords = {'error', 'exception', 'fail', 'crash', 'bug', 'issue'}
+            how_to_keywords = {'how to', 'how do i', 'how can i', 'tutorial', 'guide'}
+            
+            is_code = any(ext in message.lower() for ext in code_extensions)
+            has_error = any(keyword in message.lower() for keyword in error_keywords)
+            is_how_to = any(keyword in message.lower() for keyword in how_to_keywords)
+            
+            if is_code:
+                if has_error:
+                    system_prompt = f"{CODE_PROMPTS['system']}\n\n{CODE_PROMPTS['error_handling']}"
+                elif is_how_to:
+                    system_prompt = f"{CODE_PROMPTS['system']}\n\n{CODE_PROMPTS['optimization']}"
+                else:
+                    system_prompt = CODE_PROMPTS['system']
+            else:
+                system_prompt = GENERAL_PROMPTS['system']
+            
             # Just use the LLM without document context
-            response = llm.generate_response(message, conversation_context)
+            response = llm.generate_response(message, conversation_context, system_prompt)
             sources = []
         
         # Save the conversation if conversation_id is provided
@@ -613,7 +653,7 @@ async def get_documents(user_id: Optional[str] = None):
             documents = await app.state.document_repo.find({})
         
         # Convert to dictionary format
-        docs = [doc.model_dump() for doc in documents]
+        docs = [doc.dict() for doc in documents]
         
         return {"documents": docs}
     
@@ -893,7 +933,7 @@ async def get_conversation(conversation_id: str):
                 messages.append(msg)
             else:
                 # If it's a Pydantic model
-                messages.append(msg.model_dump())
+                messages.append(msg.dict())
         
         # Return in the format expected by frontend
         return {
@@ -1609,6 +1649,174 @@ async def rebuild_faiss_index():
             status_code=500,
             content={"error": f"Error rebuilding FAISS index: {str(e)}"}
         )
+
+@app.post("/api/chat/stream")
+async def streaming_chat(request: dict):
+    """Stream chat responses token by token."""
+    try:
+        # Extract message and conversation ID from request
+        message = request.get("message", "")
+        conversation_id = request.get("conversation_id")
+        mode = request.get("mode", "auto")
+        
+        if not message:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Message is required"}
+            )
+        
+        logger.info(f"Starting streaming chat for message: {message[:50]}...")
+        
+        # Get conversation context if ID provided
+        conversation_context = []
+        if conversation_id:
+            conversation_repo = repository_factory.conversation_repository
+            conversation = await conversation_repo.find_by_id(conversation_id)
+            
+            if conversation:
+                # Format conversation context
+                for msg in conversation.messages:
+                    if isinstance(msg, dict):
+                        if "role" in msg and "content" in msg:
+                            conversation_context.append({
+                                "role": msg["role"],
+                                "content": msg["content"]
+                            })
+                    else:
+                        conversation_context.append({
+                            "role": msg.role,
+                            "content": msg.content
+                        })
+        
+        # Determine if we should use documents
+        sources = []
+        use_documents = mode == "documents_only" or mode == "auto"
+        
+        if use_documents:
+            # Use existing vector store from app state
+            relevant_docs = await app.state.vector_store.async_store.query(message, top_k=5)
+            
+            # Format sources
+            sources = [{
+                "document": doc.get("filename", "Unknown"),
+                "content": doc.get("content", ""),
+                "relevance": doc.get("score", 0.0),
+                "page": doc.get("metadata", {}).get("page", 1)
+            } for doc in relevant_docs]
+        
+        # Create token generator
+        async def token_generator():
+            """Generate tokens from LLM and save conversation."""
+            response_text = ""
+            try:
+                # Stream the response
+                async for token_data in app.state.streaming_llm.stream_chat(
+                    message=message,
+                    conversation_context=conversation_context,
+                    sources=sources
+                ):
+                    if "token" in token_data:
+                        response_text += token_data["token"]
+                        yield f"data: {json.dumps({'token': token_data['token']})}\n\n"
+                    elif "error" in token_data:
+                        yield f"data: {json.dumps({'error': token_data['error']})}\n\n"
+                        return
+                    elif token_data.get("done", False):
+                        # Send completion with sources
+                        yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
+                        
+                        # Save conversation after completion
+                        if conversation_id:
+                            await save_streaming_conversation(
+                                conversation_id=conversation_id,
+                                user_message=message,
+                                assistant_response=response_text,
+                                sources=sources
+                            )
+                        
+                        return
+                
+                # Send final event
+                yield "data: [DONE]\n\n"
+                
+            except Exception as e:
+                logger.error(f"Error in token generator: {str(e)}")
+                yield f"data: {json.dumps({'error': f'Streaming error: {str(e)}'})}\n\n"
+                yield "data: [DONE]\n\n"
+        
+        # Return streaming response
+        return FastAPIStreamingResponse(
+            token_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable Nginx buffering
+            }
+        )
+    
+    except Exception as e:
+        logger.error(f"Error in streaming chat endpoint: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Streaming chat error: {str(e)}"}
+        )
+
+async def save_streaming_conversation(
+    conversation_id: str,
+    user_message: str,
+    assistant_response: str,
+    sources: list = None
+) -> None:
+    """Save streaming conversation after completion."""
+    try:
+        conversation_repo = repository_factory.conversation_repository
+        
+        # Get existing conversation or create new
+        conversation = await conversation_repo.find_by_id(conversation_id)
+        
+        # Prepare messages
+        user_msg = {
+            "role": "user",
+            "content": user_message,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        assistant_msg = {
+            "role": "assistant",
+            "content": assistant_response,
+            "timestamp": datetime.utcnow().isoformat(),
+            "sources": sources if sources else None
+        }
+        
+        if conversation:
+            # Update existing conversation
+            messages = conversation.messages
+            messages.append(user_msg)
+            messages.append(assistant_msg)
+            
+            await conversation_repo.update(conversation_id, {
+                "messages": messages,
+                "preview": user_message[:50] + "..." if len(user_message) > 50 else user_message,
+                "last_updated": datetime.utcnow()
+            })
+        else:
+            # Create new conversation
+            from app.database.models import Conversation
+            
+            new_conversation = Conversation(
+                id=conversation_id,
+                messages=[user_msg, assistant_msg],
+                preview=user_message[:50] + "..." if len(user_message) > 50 else user_message,
+                last_updated=datetime.utcnow()
+            )
+            
+            await conversation_repo.create(new_conversation)
+        
+        logger.info(f"Saved streaming conversation: {conversation_id}")
+        
+    except Exception as e:
+        logger.error(f"Error saving streaming conversation: {str(e)}")
     
 # Run server
 if __name__ == "__main__":

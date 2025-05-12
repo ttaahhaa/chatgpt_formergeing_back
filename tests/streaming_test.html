@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Streaming Chat Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        .chat-container {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .message-form {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        textarea {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-family: inherit;
+            height: 80px;
+        }
+
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+
+        .response-area {
+            border: 1px solid #eee;
+            border-radius: 5px;
+            padding: 15px;
+            min-height: 100px;
+            white-space: pre-wrap;
+            margin-bottom: 15px;
+            background-color: #f9f9f9;
+        }
+
+        .sources-container {
+            border: 1px solid #eee;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 10px;
+            background-color: #f5f5f5;
+        }
+
+        .source-item {
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .source-item:last-child {
+            border-bottom: none;
+        }
+
+        .status {
+            color: #777;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Streaming Chat API Test</h1>
+    <p>This page demonstrates the streaming chat API endpoint which returns tokens one at a time.</p>
+
+    <div class="chat-container">
+        <form class="message-form" id="chatForm">
+            <label for="messageInput">Your Message:</label>
+            <textarea id="messageInput" required
+                placeholder="Type your message here...">Tell me about machine learning in 5 sentences</textarea>
+
+            <label for="modeSelect">Mode:</label>
+            <select id="modeSelect">
+                <option value="auto">Auto (default)</option>
+                <option value="documents_only">Documents Only</option>
+                <option value="general_knowledge">General Knowledge</option>
+            </select>
+
+            <button type="submit" id="submitBtn">Send Message</button>
+        </form>
+
+        <div class="status" id="status">Ready</div>
+
+        <h3>Response:</h3>
+        <div class="response-area" id="responseArea"></div>
+
+        <h3>Sources:</h3>
+        <div class="sources-container" id="sourcesContainer"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const chatForm = document.getElementById('chatForm');
+            const messageInput = document.getElementById('messageInput');
+            const modeSelect = document.getElementById('modeSelect');
+            const submitBtn = document.getElementById('submitBtn');
+            const responseArea = document.getElementById('responseArea');
+            const sourcesContainer = document.getElementById('sourcesContainer');
+            const statusEl = document.getElementById('status');
+
+            // Generate a random conversation ID
+            const conversationId = 'test-' + Date.now();
+
+            chatForm.addEventListener('submit', function (e) {
+                e.preventDefault();
+
+                const message = messageInput.value.trim();
+                if (!message) return;
+
+                // Disable form while streaming
+                submitBtn.disabled = true;
+                responseArea.textContent = '';
+                sourcesContainer.innerHTML = '';
+                statusEl.textContent = 'Streaming response...';
+
+                // Create the request payload
+                const payload = {
+                    message: message,
+                    conversation_id: conversationId,
+                    mode: modeSelect.value
+                };
+
+                // Open EventSource connection to streaming endpoint
+                streamChatResponse(payload);
+            });
+
+            function streamChatResponse(payload) {
+                // Use fetch with streaming response processing
+                fetch('http://localhost:8001/api/chat/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error ${response.status}`);
+                        }
+
+                        // Get the response reader to read streaming chunks
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buffer = '';
+
+                        // Function to process the stream
+                        function processStream() {
+                            return reader.read().then(({ done, value }) => {
+                                if (done) {
+                                    statusEl.textContent = 'Stream complete';
+                                    submitBtn.disabled = false;
+                                    return;
+                                }
+
+                                // Decode the chunk and add to buffer
+                                buffer += decoder.decode(value, { stream: true });
+
+                                // Process any complete events in buffer
+                                const lines = buffer.split('\n\n');
+                                buffer = lines.pop(); // Keep the incomplete line in buffer
+
+                                for (const line of lines) {
+                                    if (line.trim() === '') continue;
+
+                                    if (line.startsWith('data: ')) {
+                                        const data = line.substring(6); // Remove 'data: ' prefix
+
+                                        if (data === '[DONE]') {
+                                            statusEl.textContent = 'Stream complete';
+                                            submitBtn.disabled = false;
+                                            continue;
+                                        }
+
+                                        try {
+                                            const event = JSON.parse(data);
+
+                                            if (event.token) {
+                                                // Append token to response area
+                                                responseArea.textContent += event.token;
+                                            } else if (event.error) {
+                                                statusEl.textContent = 'Error: ' + event.error;
+                                                submitBtn.disabled = false;
+                                            } else if (event.done) {
+                                                // Display sources if available
+                                                if (event.sources && event.sources.length > 0) {
+                                                    displaySources(event.sources);
+                                                } else {
+                                                    sourcesContainer.innerHTML = '<em>No sources provided</em>';
+                                                }
+                                            }
+                                        } catch (e) {
+                                            console.error('Error parsing event data:', e);
+                                        }
+                                    }
+                                }
+
+                                // Continue reading
+                                return processStream();
+                            });
+                        }
+
+                        return processStream();
+                    })
+                    .catch(error => {
+                        statusEl.textContent = 'Error: ' + error.message;
+                        submitBtn.disabled = false;
+                        console.error('Streaming error:', error);
+                    });
+            }
+
+            function displaySources(sources) {
+                sourcesContainer.innerHTML = ''; // Clear previous sources
+
+                if (sources.length === 0) {
+                    sourcesContainer.innerHTML = '<em>No sources available</em>';
+                    return;
+                }
+
+                for (const source of sources) {
+                    const sourceDiv = document.createElement('div');
+                    sourceDiv.className = 'source-item';
+
+                    const title = document.createElement('h4');
+                    title.textContent = source.document || 'Unknown Document';
+                    sourceDiv.appendChild(title);
+
+                    const relevance = document.createElement('p');
+                    relevance.innerHTML = `<strong>Relevance:</strong> ${(source.relevance * 100).toFixed(2)}%`;
+                    sourceDiv.appendChild(relevance);
+
+                    if (source.page) {
+                        const page = document.createElement('p');
+                        page.innerHTML = `<strong>Page:</strong> ${source.page}`;
+                        sourceDiv.appendChild(page);
+                    }
+
+                    if (source.content) {
+                        const content = document.createElement('p');
+                        content.innerHTML = `<strong>Content:</strong> ${source.content.substring(0, 200)}${source.content.length > 200 ? '...' : ''}`;
+                        sourceDiv.appendChild(content);
+                    }
+
+                    sourcesContainer.appendChild(sourceDiv);
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>
