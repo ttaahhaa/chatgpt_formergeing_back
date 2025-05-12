@@ -1,9 +1,9 @@
 import os
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List
 import tempfile
 import shutil
-from pathlib import Path
+from langchain.schema import Document
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,57 @@ class DocumentLoader:
         except Exception as e:
             logger.error(f"Error loading document: {str(e)}")
             return {"error": str(e)}
+    
+    def load_document(self, content: bytes, filename: str) -> List[Document]:
+        """
+        Load a document from content bytes and filename.
+        
+        Args:
+            content: Document content as bytes
+            filename: Name of the file
+            
+        Returns:
+            List of Document objects
+        """
+        try:
+            # Create a temporary file
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(content)
+                temp_path = temp_file.name
+            
+            # Load the document
+            result = self.load(temp_path)
+            
+            # Clean up temp file
+            os.unlink(temp_path)
+            
+            if "error" in result:
+                return []
+            
+            # Convert to Document format
+            return [Document(
+                page_content=result["content"],
+                metadata={
+                    "source": filename,
+                    "type": result["metadata"]["type"]
+                }
+            )]
+            
+        except Exception as e:
+            logger.error(f"Error loading document: {str(e)}")
+            return []
+    
+    def process_documents(self, documents: List[Document]) -> List[Document]:
+        """
+        Process a list of documents, filtering out empty ones.
+        
+        Args:
+            documents: List of documents to process
+            
+        Returns:
+            List of processed documents
+        """
+        return [doc for doc in documents if doc.page_content.strip()]
     
     def _determine_file_type(self, extension: str) -> str:
         """Determine the general file type based on extension."""

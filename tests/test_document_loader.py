@@ -3,13 +3,12 @@ Tests for document loader functionality.
 """
 
 import unittest
-from unittest.mock import patch, Mock, MagicMock
-import os
+from unittest.mock import patch, MagicMock
 import tempfile
 from pathlib import Path
-
-from app.core.document_loader import load_document, process_documents, _load_file
 from langchain.schema import Document
+
+from app.core.document_loader import DocumentLoader
 
 class TestDocumentLoader(unittest.TestCase):
     """Test cases for document loader functionality."""
@@ -32,6 +31,8 @@ class TestDocumentLoader(unittest.TestCase):
         self.pdf_file = self.temp_path / "test.pdf"
         with open(self.pdf_file, "wb") as f:
             f.write(self.test_pdf_content)
+        
+        self.loader = DocumentLoader()
     
     def tearDown(self):
         """Clean up test environment."""
@@ -39,7 +40,7 @@ class TestDocumentLoader(unittest.TestCase):
     
     @patch("app.core.document_loader.load_from_cache")
     @patch("app.core.document_loader.save_to_cache")
-    @patch("app.core.document_loader._load_file")
+    @patch("app.core.document_loader.DocumentLoader._load_file")
     @patch("app.core.document_loader.get_document_hash")
     def test_load_document_new(self, mock_hash, mock_load_file, mock_save_cache, mock_load_cache):
         """Test loading a document that's not in cache."""
@@ -51,7 +52,7 @@ class TestDocumentLoader(unittest.TestCase):
         mock_load_file.return_value = test_docs
         
         # Execute function
-        result = load_document(self.test_content, "test.txt")
+        result = self.loader.load_document(self.test_content, "test.txt")
         
         # Assert
         self.assertEqual(result, test_docs)
@@ -62,7 +63,7 @@ class TestDocumentLoader(unittest.TestCase):
     
     @patch("app.core.document_loader.load_from_cache")
     @patch("app.core.document_loader.save_to_cache")
-    @patch("app.core.document_loader._load_file")
+    @patch("app.core.document_loader.DocumentLoader._load_file")
     @patch("app.core.document_loader.get_document_hash")
     def test_load_document_from_cache(self, mock_hash, mock_load_file, mock_save_cache, mock_load_cache):
         """Test loading a document from cache."""
@@ -72,7 +73,7 @@ class TestDocumentLoader(unittest.TestCase):
         mock_load_cache.return_value = cached_docs
         
         # Execute function
-        result = load_document(self.test_content, "test.txt")
+        result = self.loader.load_document(self.test_content, "test.txt")
         
         # Assert
         self.assertEqual(result, cached_docs)
@@ -91,10 +92,10 @@ class TestDocumentLoader(unittest.TestCase):
         mock_instance.load.return_value = mock_docs
         
         # Execute function
-        result = _load_file(str(self.txt_file), ".txt", "test.txt")
+        result = self.loader.load(str(self.txt_file))
         
         # Assert
-        self.assertEqual(result, mock_docs)
+        self.assertEqual(result["content"], mock_docs[0].page_content)
         mock_text_loader.assert_called_with(str(self.txt_file), encoding="utf-8")
         mock_instance.load.assert_called_once()
     
@@ -108,7 +109,7 @@ class TestDocumentLoader(unittest.TestCase):
         ]
         
         # Execute function
-        result = process_documents(docs)
+        result = self.loader.process_documents(docs)
         
         # Assert
         self.assertEqual(len(result), 2)  # Should filter out the empty document
