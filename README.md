@@ -168,3 +168,55 @@ You can tune the system by modifying parameters in `app/config.py`:
 - `EMBEDDING_BATCH_SIZE`: Number of chunks to embed at once (default: 16)
 - `TOP_K_RETRIEVAL`: Number of document chunks to retrieve (default: 5)
 - `HYBRID_ALPHA`: Balance between semantic and keyword search (default: 0.5)
+
+# QA Assistant with Enhanced Prompts
+
+This application provides a document-based question answering system using local LLMs through Ollama.
+
+## Enhanced Prompts for Small LLMs
+
+The system now includes an advanced prompting system designed specifically to improve the performance of smaller, less powerful LLMs:
+
+### Key Features
+
+1. **Context-Aware Prompt Selection**: Automatically selects the most appropriate prompt based on query analysis
+2. **Comprehensive Prompt Categories**:
+   - General knowledge prompts
+   - Code-specific prompts
+   - Document-based prompts
+   - Conversation prompts for multi-turn interactions
+   - Instructional prompts for how-to questions
+
+3. **Dynamic Prompt Enhancement**: Combines multiple prompts based on the query context for more targeted responses
+
+4. **Optimized for Small LLMs**:
+   - Clear, structured guidance with numbered points
+   - Concrete instructions for different query types
+   - Explicit formatting and organization guidance
+
+### Prompt Organization
+
+- **General Prompts**: Core system prompts, factual information, and response structure guidelines
+- **Code Prompts**: Programming-related prompts including debugging, optimization, and code review
+- **Document Prompts**: Prompts for document-based QA with specialized handling for different document types
+- **Conversation Prompts**: Manage multi-turn conversations with clarification, follow-up, and correction guidance
+- **Instructional Prompts**: Step-by-step teaching with beginner guides and troubleshooting
+
+### How It Works
+
+The `PromptSelector` class analyzes each query to:
+1. Detect the query type based on pattern matching
+2. Select the appropriate base system prompt
+3. Add specialized sub-prompts based on query keywords
+4. Combine everything into a clear, detailed prompt for the LLM
+
+## Running the Application
+
+1. Ensure Ollama is installed and running
+2. Start the application with `python -m uvicorn app.main:app --reload`
+3. Access the web interface at http://localhost:8000
+
+## API Usage
+
+The system exposes several endpoints for document upload, querying, and conversation management.
+See the API documentation for details.
