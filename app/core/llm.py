@@ -6,6 +6,8 @@ import requests
 import json
 from typing import List, Dict, Any, Optional
 
+from app.prompts import prompt_selector
+
 logger = logging.getLogger(__name__)
 
 class LLMChain:
@@ -37,16 +39,29 @@ class LLMChain:
             if not query:
                 return "I didn't receive a question. How can I help you?"
             
+            # Get enhanced prompt using prompt selector
+            enhanced_system_prompt = prompt_selector.get_enhanced_prompt(
+                query=query,
+                conversation_context=conversation_context
+            )
+            
             # Format conversation context for Ollama
             messages = []
             
-            # Add context messages
+            # Add system prompt as the first message
+            messages.append({
+                "role": "system",
+                "content": enhanced_system_prompt
+            })
+            
+            # Add context messages (skipping any existing system messages)
             if conversation_context:
                 for msg in conversation_context:
-                    messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
+                    if msg["role"] != "system":  # Skip old system messages
+                        messages.append({
+                            "role": msg["role"],
+                            "content": msg["content"]
+                        })
             
             # Add current query
             messages.append({
@@ -54,11 +69,8 @@ class LLMChain:
                 "content": query
             })
             
-            # If no previous context, simplify to direct prompt
-            if len(messages) <= 1:
-                return self._generate_with_ollama_completion(query)
-            else:
-                return self._generate_with_ollama_chat(messages)
+            # Use chat completion for all queries to benefit from the enhanced system prompt
+            return self._generate_with_ollama_chat(messages)
             
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
@@ -130,7 +142,13 @@ class LLMChain:
             Dict containing the response and sources
         """
         try:
-            # Prepare a prompt that includes document content
+            # Get enhanced prompt for document-based questions
+            enhanced_system_prompt = prompt_selector.get_enhanced_prompt(
+                query=query,
+                document_mode=True
+            )
+            
+            # Prepare document context
             context_prompt = ""
             sources = []
             
@@ -154,11 +172,20 @@ class LLMChain:
                         "relevance": 0.9 - (i * 0.2)  # Mock relevance scores
                     })
             
-            # Create the full prompt with query and document context
-            full_prompt = f"{context_prompt}Given the above documents, please answer the following question: {query}"
+            # Create messages for chat API
+            messages = [
+                {
+                    "role": "system",
+                    "content": enhanced_system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": f"{context_prompt}Based on the above documents, please answer this question: {query}"
+                }
+            ]
             
-            # Get the response from Ollama
-            response = self._generate_with_ollama_completion(full_prompt)
+            # Get the response using chat completion
+            response = self._generate_with_ollama_chat(messages)
             
             return {
                 "response": response,
