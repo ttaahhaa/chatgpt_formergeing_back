@@ -5,6 +5,7 @@ import logging
 import uuid
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
 
 from app.database.models import Embedding
 from app.database.config import mongodb_config
@@ -12,15 +13,12 @@ from app.database.repositories.base_repository import BaseRepository
 
 logger = logging.getLogger(__name__)
 
-class EmbeddingRepository(BaseRepository[Embedding]):
-    """Repository for vector embeddings operations."""
+class EmbeddingRepository(BaseRepository):
+    """Repository for embedding operations."""
     
-    def __init__(self):
-        """Initialize the embedding repository."""
-        super().__init__(
-            collection_name=mongodb_config.embeddings_collection,
-            model_class=Embedding
-        )
+    def __init__(self, collection):
+        """Initialize with MongoDB collection."""
+        super().__init__(collection)
         # Create index for vector similarity search if it doesn't exist
         self._create_indexes()
     
@@ -33,18 +31,13 @@ class EmbeddingRepository(BaseRepository[Embedding]):
         except Exception as e:
             logger.error(f"Error creating indexes: {str(e)}")
     
-    async def find_by_document_id(self, document_id: str) -> Optional[Embedding]:
-        """
-        Find embedding by document ID.
-        
-        Args:
-            document_id: Document ID
-            
-        Returns:
-            Embedding if found, None otherwise
-        """
-        results = await self.find({"document_id": document_id}, limit=1)
-        return results[0] if results else None
+    async def find_by_document_id(self, document_id: str) -> Optional[Dict]:
+        """Find embeddings for a document."""
+        try:
+            return await self.find_one({"document_id": document_id})
+        except Exception as e:
+            print(f"Error finding embeddings: {str(e)}")
+            return None
     
     async def add_embedding(self, document_id: str, embedding: List[float], model: str = "arabert") -> Optional[str]:
         """
@@ -63,11 +56,11 @@ class EmbeddingRepository(BaseRepository[Embedding]):
             existing = await self.find_by_document_id(document_id)
             if existing:
                 # Update existing embedding
-                await self.update(existing.id, {
+                await self.update(existing["_id"], {
                     "embedding": embedding,
                     "embedding_model": model
                 })
-                return existing.id
+                return existing["_id"]
             
             # Create new embedding
             embedding_data = {
@@ -84,20 +77,12 @@ class EmbeddingRepository(BaseRepository[Embedding]):
             return None
     
     async def delete_by_document_id(self, document_id: str) -> bool:
-        """
-        Delete embedding by document ID.
-        
-        Args:
-            document_id: Document ID
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Delete embeddings for a document."""
         try:
-            result = await self.collection.delete_one({"document_id": document_id})
+            result = await self.collection.delete_many({"document_id": document_id})
             return result.deleted_count > 0
         except Exception as e:
-            logger.error(f"Error deleting embedding: {str(e)}")
+            print(f"Error deleting embeddings: {str(e)}")
             return False
     
     async def find_similar(self, query_embedding: List[float], top_k: int = 5) -> List[Tuple[str, float]]:

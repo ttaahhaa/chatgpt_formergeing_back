@@ -44,3 +44,8 @@ sentencepiece>=0.1.99
 dnspython>=2.7.0
 motor>=3.7.0
 pymongo>=4.12.1
+
+# Added from the code block
+PyJWT==2.8.0
+bcrypt==4.0.1
+passlib==1.7.4

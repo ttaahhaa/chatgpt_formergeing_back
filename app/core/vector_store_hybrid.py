@@ -133,6 +133,7 @@ class HybridVectorStore:
             True if successful, False otherwise
         """
         try:
+            logger.info(f"Adding document to MongoDB: {document}")
             # Generate a unique document ID if not present
             if "id" not in document:
                 document["id"] = f"doc_{uuid.uuid4()}"
@@ -147,7 +148,7 @@ class HybridVectorStore:
                 # We'll update the embedding below
             else:
                 # Add document to MongoDB
-                doc_id = await self.document_repo.add_document(document)
+                doc_id = await self.document_repo.create(document)
                 if not doc_id:
                     logger.error("Failed to add document to MongoDB")
                     return False
@@ -155,7 +156,11 @@ class HybridVectorStore:
             
             # Generate embedding for document content
             content = document.get("content", "")
-            if content:
+            if not content or content.startswith("[Error") or content.startswith("[No readable content"):
+                logger.warning(f"Skipping embedding generation for document with error: {content}")
+                return True
+            
+            try:
                 embedding = self.embeddings_model.get_embeddings(content)
                 
                 # Add embedding to MongoDB
@@ -170,12 +175,16 @@ class HybridVectorStore:
                 
                 # Add to FAISS index
                 await self._update_faiss_index()
+            except Exception as e:
+                logger.error(f"Error generating embedding: {str(e)}")
+                # Don't fail the document addition if embedding fails
+                # Just log the error and continue
             
             logger.info(f"Added document: {document.get('filename', 'unknown')}")
             return True
             
         except Exception as e:
-            logger.error(f"Error adding document: {str(e)}")
+            logger.error(f"Error adding document to MongoDB: {str(e)}")
             return False
     
     async def _update_faiss_index(self) -> bool:

@@ -12,15 +12,12 @@ from app.database.repositories.base_repository import BaseRepository
 
 logger = logging.getLogger(__name__)
 
-class ConversationRepository(BaseRepository[Conversation]):
+class ConversationRepository(BaseRepository):
     """Repository for conversation operations."""
     
-    def __init__(self):
+    def __init__(self, collection):
         """Initialize the conversation repository."""
-        super().__init__(
-            collection_name=mongodb_config.conversations_collection,
-            model_class=Conversation
-        )
+        super().__init__(collection)
         # Create index for last_updated field for sorting
         self._create_indexes()
     

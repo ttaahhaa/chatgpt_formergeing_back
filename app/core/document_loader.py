@@ -1,9 +1,10 @@
 import os
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 import tempfile
 import shutil
 from pathlib import Path
+from PyPDF2 import PdfReader
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +60,14 @@ class DocumentLoader:
             '.tar': self._load_archive,
             '.gz': self._load_archive,
             '.7z': self._load_archive,
+            '.pdf': self._load_pdf,
         }
     
     def set_document_loader(self):
         """Set this loader as active."""
         return self
     
-    def load(self, file_path: str) -> Dict:
+    def load(self, file_path: str) -> Dict[str, Any]:
         """
         Load a document from the specified file path.
         
@@ -80,46 +82,70 @@ class DocumentLoader:
             
             if not os.path.exists(file_path):
                 logger.error(f"File not found: {file_path}")
-                return {"error": f"File not found: {file_path}"}
+                return {"content": "[File not found]", "metadata": {"path": file_path, "size": 0, "type": "unknown"}}
             
             file_extension = os.path.splitext(file_path)[1].lower()
             
             if file_extension in self.supported_extensions:
                 loader_func = self.supported_extensions[file_extension]
-                content = loader_func(file_path)
+                try:
+                    content = loader_func(file_path)
+                    if not content or content.strip() == "":
+                        logger.warning(f"No content extracted from file: {file_path}")
+                        content = "[No readable content found in the document]"
+                except ImportError as e:
+                    logger.error(f"Required library not installed for {file_extension}: {str(e)}")
+                    content = f"[Error: Required library not installed for {file_extension} files]"
+                except Exception as e:
+                    logger.error(f"Error in loader function for {file_extension}: {str(e)}")
+                    content = f"[Error loading {file_extension} file: {str(e)}]"
                 
+                metadata = {
+                    "path": file_path,
+                    "size": os.path.getsize(file_path),
+                    "type": file_extension[1:],  # Remove the dot
+                    "error": None if content and not content.startswith("[Error") else content
+                }
                 return {
-                    "filename": os.path.basename(file_path),
-                    "extension": file_extension,
                     "content": content,
-                    "metadata": {
-                        "path": file_path,
-                        "size": os.path.getsize(file_path),
-                        "type": self._determine_file_type(file_extension)
-                    }
+                    "metadata": metadata,
+                    "extension": file_extension  # Add extension to the returned data
                 }
             else:
                 logger.warning(f"Unsupported file extension: {file_extension}")
                 # Try to load as text anyway as a fallback
                 try:
                     content = self._load_text(file_path)
+                    metadata = {
+                        "path": file_path,
+                        "size": os.path.getsize(file_path),
+                        "type": "unknown",
+                        "error": None if content and not content.startswith("[Error") else content
+                    }
+                    return {"content": content, "metadata": metadata}
+                except Exception as inner_e:
+                    logger.error(f"Failed to load file as text: {str(inner_e)}")
                     return {
-                        "filename": os.path.basename(file_path),
-                        "extension": file_extension,
-                        "content": content,
+                        "content": "[Unsupported file format]",
                         "metadata": {
                             "path": file_path,
                             "size": os.path.getsize(file_path),
-                            "type": "unknown"
+                            "type": "unknown",
+                            "error": f"Failed to load file as text: {str(inner_e)}"
                         }
                     }
-                except Exception as inner_e:
-                    logger.error(f"Failed to load file as text: {str(inner_e)}")
-                    return {"error": f"Unsupported file type: {file_extension}"}
         
         except Exception as e:
             logger.error(f"Error loading document: {str(e)}")
-            return {"error": str(e)}
+            return {
+                "content": f"[Error loading document: {str(e)}]",
+                "metadata": {
+                    "path": file_path,
+                    "size": os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+                    "type": "unknown",
+                    "error": str(e)
+                }
+            }
     
     def _determine_file_type(self, extension: str) -> str:
         """Determine the general file type based on extension."""
@@ -162,6 +188,9 @@ class DocumentLoader:
                         return binary_content.decode('utf-8', errors='replace')
                     except:
                         return f"[Binary file content - {len(binary_content)} bytes]"
+        except Exception as e:
+            logger.error(f"Error reading text file: {str(e)}")
+            return f"[Error reading text file: {str(e)}]"
     
     def _load_docx(self, file_path: str) -> str:
         """Load content from a .docx file."""
@@ -172,9 +201,17 @@ class DocumentLoader:
             for para in doc.paragraphs:
                 if para.text.strip():  # Only include non-empty paragraphs
                     content.append(para.text)
+            
+            # Also try to get text from tables
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            content.append(cell.text)
+            
             text_content = "\n".join(content)
             if not text_content.strip():
-                return "No readable text found in the document."
+                return "[No readable text found in the document]"
             return text_content
         except ImportError:
             logger.error("python-docx not installed")
@@ -271,3 +308,20 @@ class DocumentLoader:
         except Exception as e:
             logger.error(f"Error processing archive {file_path}: {str(e)}")
             return f"[Archive file: {os.path.basename(file_path)}, error during extraction: {str(e)}]"
+
+    def _load_pdf(self, file_path: str) -> str:
+        """Load content from a PDF file."""
+        try:
+            reader = PdfReader(file_path)
+            text = []
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text.append(page_text)
+            return "\n".join(text).strip() or "[No text found in PDF]"
+        except ImportError:
+            logger.error("PyPDF2 not installed")
+            return "[Error: PyPDF2 library required to process PDF files]"
+        except Exception as e:
+            logger.error(f"Error reading PDF file: {str(e)}")
+            return f"[Error reading PDF file: {str(e)}]"

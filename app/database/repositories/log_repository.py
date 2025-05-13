@@ -14,14 +14,11 @@ from app.database.repositories.base_repository import BaseRepository
 
 logger = logging.getLogger(__name__)
 
-class LogRepository(BaseRepository[Log]):
+class LogRepository(BaseRepository):
     """Repository for log operations."""
     
-    def __init__(self):
-        super().__init__(
-            collection_name="logs",
-            model_class=Log
-        )
+    def __init__(self, collection):
+        super().__init__(collection)
         self._create_indexes()
     
     def _create_indexes(self):

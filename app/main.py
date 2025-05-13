@@ -15,6 +15,9 @@ import uuid
 import json
 import asyncio
 import traceback
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from app.utils.jwt_utils import create_access_token, verify_token, Token, TokenData
+from app.core.static_users import authenticate_user, get_user, verify_password
 
 # Setup logging
 from app.utils.logging_utils import setup_logging
@@ -226,13 +229,24 @@ class UserResponse(BaseModel):
     email: str
     role: str
 
-# Database dependency
-async def get_db():
-    """Database dependency injection."""
-    initialized = await initialize_database()
-    if not initialized:
-        raise HTTPException(status_code=500, detail="Database connection failed")
-    return True
+# OAuth2 scheme for token authentication
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/users/login")
+
+# Authentication dependency
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
+    """Get the current authenticated user from the JWT token."""
+    return verify_token(token)
+
+# Permission dependency
+async def check_permission(permission: str, current_user: TokenData = Depends(get_current_user)):
+    """Check if the current user has the required permission."""
+    has_permission = await app.state.user_repo.check_permission(current_user.user_id, permission)
+    if not has_permission:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    return current_user
 
 # API routes
 @app.get("/")
@@ -240,7 +254,7 @@ async def root():
     logger.info("Root endpoint accessed")
     return {"message": "Document QA Assistant API with MongoDB is running"}
 
-@app.get("/api/status", dependencies=[Depends(get_db)])
+@app.get("/api/status")
 async def get_status():
     """Get system status information.
     
@@ -324,27 +338,12 @@ async def get_status():
             content={"error": f"Error retrieving status: {str(e)}"}
         )
 
-@app.post("/api/upload", dependencies=[Depends(get_db)])
+@app.post("/api/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    user_id: Optional[str] = Form(None)
+    current_user: TokenData = Depends(lambda: check_permission("documents:upload"))
 ):
-    """Upload a document to the system.
-    
-    This endpoint handles document uploads by:
-    1. Saving the uploaded file to a temporary location
-    2. Loading and processing the document using DocumentLoader
-    3. Adding metadata like filename, owner ID, and unique document ID
-    4. Storing the document in MongoDB via VectorStore
-    5. Cleaning up temporary files
-    
-    Args:
-        file: The uploaded file
-        user_id: Optional user ID to associate with the document
-        
-    Returns:
-        Success message or error details
-    """
+    """Upload a document to the system."""
     try:
         logger.info(f"Uploading file: {file.filename}")
 
@@ -357,26 +356,16 @@ async def upload_document(
             f.write(contents)
 
         # Load document using your loader
-        document = app.state.document_loader.load(temp_path)
-        
-        # Check for errors from loader
-        if "error" in document:
-            logger.error(f"Error loading document: {document['error']}")
-            os.unlink(temp_path)
-            return JSONResponse(
-                status_code=400,
-                content={"error": document["error"]}
-            )
+        loaded = app.state.document_loader.load(temp_path)
 
-        # Prepare document for MongoDB
-        document["filename"] = file.filename
-        
-        # Add owner if provided
-        if user_id:
-            document["owner_id"] = user_id
-        
-        # Generate a unique ID
-        document["id"] = f"doc_{uuid.uuid4()}"
+        # Flatten the document dict for MongoDB
+        document = {
+            "id": f"doc_{uuid.uuid4()}",
+            "filename": file.filename,
+            "extension": loaded.get("extension") or os.path.splitext(file.filename)[1].lower(),
+            "content": loaded.get("content", ""),
+            "metadata": loaded.get("metadata", {}),
+        }
         
         # Add to MongoDB via vector store
         success = await app.state.vector_store.async_store.add_document(document)
@@ -401,15 +390,9 @@ async def upload_document(
             content={"error": f"Error processing document: {str(e)}"}
         )
 
-
-@app.post("/api/query", response_model=QueryResponse, dependencies=[Depends(get_db)])
+@app.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
-    """
-    DEPRECATED: This endpoint is deprecated and will be removed in a future version.
-    Please use /api/chat endpoint instead with mode="documents_only" for similar functionality.
-    """
-    logger.warning("The /api/query endpoint is deprecated. Please use /api/chat instead.")
-    
+    """Process a query against the document store."""
     try:
         logger.info(f"Processing query: {request.query}")
         
@@ -462,7 +445,6 @@ async def query(request: QueryRequest):
             status_code=500,
             content={"error": f"Error processing query: {str(e)}"}
         )
-
 
 @app.post("/api/chat")
 async def chat(request: dict):
@@ -617,7 +599,7 @@ async def chat(request: dict):
             content={"error": f"Chat processing error: {str(e)}"}
         )
     
-@app.post("/api/clear_documents", dependencies=[Depends(get_db)])
+@app.post("/api/clear_documents")
 async def clear_documents():
     """Clear all documents from the system."""
     try:
@@ -640,7 +622,7 @@ async def clear_documents():
             content={"error": f"Error clearing documents: {str(e)}"}
         )
 
-@app.get("/api/documents", dependencies=[Depends(get_db)])
+@app.get("/api/documents")
 async def get_documents(user_id: Optional[str] = None):
     """Get all documents in the system."""
     try:
@@ -651,8 +633,11 @@ async def get_documents(user_id: Optional[str] = None):
             # Get all documents
             documents = await app.state.document_repo.find({})
         
-        # Convert to dictionary format
-        docs = [doc.dict() for doc in documents]
+        docs = []
+        for doc in documents:
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            docs.append(doc)
         
         return {"documents": docs}
     
@@ -663,8 +648,11 @@ async def get_documents(user_id: Optional[str] = None):
             content={"error": f"Error retrieving documents: {str(e)}"}
         )
 
-@app.post("/api/delete_document", dependencies=[Depends(get_db)])
-async def delete_document(document_id: str = Form(...), user_id: Optional[str] = Form(None)):
+@app.post("/api/delete_document")
+async def delete_document(
+    document_id: str = Form(...),
+    current_user: TokenData = Depends(lambda: check_permission("documents:delete"))
+):
     """Delete a document from the system."""
     try:
         # Check if document exists
@@ -677,7 +665,7 @@ async def delete_document(document_id: str = Form(...), user_id: Optional[str] =
             )
         
         # Check ownership if user_id provided
-        if user_id and document.owner_id and document.owner_id != user_id:
+        if document.owner_id and document.owner_id != current_user.user_id:
             return JSONResponse(
                 status_code=403,
                 content={"error": "You don't have permission to delete this document"}
@@ -705,71 +693,12 @@ async def delete_document(document_id: str = Form(...), user_id: Optional[str] =
             content={"error": f"Error deleting document: {str(e)}"}
         )
 
-# User management endpoints
-@app.post("/api/users/register", response_model=UserResponse, dependencies=[Depends(get_db)])
-async def register_user(request: UserRequest):
-    """Register a new user."""
-    try:
-        # Check if username or email already exists
-        existing_user = await app.state.user_repo.find_by_username(request.username)
-        if existing_user:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Username already exists"}
-            )
-        
-        existing_email = await app.state.user_repo.find_by_email(request.email)
-        if existing_email:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Email already exists"}
-            )
-        
-        # Create new user
-        user_id = await app.state.user_repo.create_user(
-            username=request.username,
-            email=request.email,
-            password=request.password,
-            role="user"  # Default role
-        )
-        
-        if not user_id:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Failed to create user"}
-            )
-        
-        # Get the created user
-        user = await app.state.user_repo.find_by_id(user_id)
-        if not user:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "User created but could not be retrieved"}
-            )
-        
-        logger.info(f"Registered new user: {user.username}")
-        
-        # Return user data (excluding password)
-        return UserResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            role=user.role
-        )
-    
-    except Exception as e:
-        logger.error(f"Error registering user: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error registering user: {str(e)}"}
-        )
-
-@app.post("/api/users/login", dependencies=[Depends(get_db)])
-async def login_user(username: str = Form(...), password: str = Form(...)):
-    """Authenticate a user and return token."""
+@app.post("/api/users/login", response_model=Token)
+async def login_user(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Authenticate a user and return JWT token."""
     try:
         # Authenticate user
-        user = await app.state.user_repo.authenticate(username, password)
+        user = await app.state.user_repo.authenticate(form_data.username, form_data.password)
         
         if not user:
             return JSONResponse(
@@ -777,19 +706,16 @@ async def login_user(username: str = Form(...), password: str = Form(...)):
                 content={"error": "Invalid username or password"}
             )
         
-        # Generate a simple token (in a real app, use proper JWT)
-        token = f"user_{user.id}_{uuid.uuid4()}"
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user["username"], "user_id": user["id"]}
+        )
         
-        logger.info(f"User logged in: {user.username}")
+        logger.info(f"User logged in: {user['username']}")
         
         return {
-            "token": token,
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "role": user.role
-            }
+            "access_token": access_token,
+            "token_type": "bearer"
         }
     
     except Exception as e:
@@ -799,11 +725,11 @@ async def login_user(username: str = Form(...), password: str = Form(...)):
             content={"error": f"Error logging in: {str(e)}"}
         )
 
-@app.get("/api/users/me", dependencies=[Depends(get_db)])
-async def get_current_user(user_id: str = Form(...)):
+@app.get("/api/users/me")
+async def get_current_user_info(current_user: TokenData = Depends(get_current_user)):
     """Get the current user's profile."""
     try:
-        user = await app.state.user_repo.find_by_id(user_id)
+        user = await app.state.user_repo.find_by_id(current_user.user_id)
         
         if not user:
             return JSONResponse(
@@ -811,12 +737,15 @@ async def get_current_user(user_id: str = Form(...)):
                 content={"error": "User not found"}
             )
         
+        # Get user permissions
+        permissions = await app.state.user_repo.get_user_permissions(user["id"])
+        
         return {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "role": user.role,
-            "created_at": user.created_at
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "permissions": permissions,
+            "created_at": user["created_at"]
         }
     
     except Exception as e:
@@ -826,16 +755,16 @@ async def get_current_user(user_id: str = Form(...)):
             content={"error": f"Error retrieving user: {str(e)}"}
         )
 
-@app.post("/api/users/change-password", dependencies=[Depends(get_db)])
+@app.post("/api/users/change-password")
 async def change_password(
-    user_id: str = Form(...),
     current_password: str = Form(...),
-    new_password: str = Form(...)
+    new_password: str = Form(...),
+    current_user: TokenData = Depends(get_current_user)
 ):
     """Change a user's password."""
     try:
-        # Verify current password
-        user = await app.state.user_repo.find_by_id(user_id)
+        # Get user
+        user = await app.state.user_repo.find_by_id(current_user.user_id)
         
         if not user:
             return JSONResponse(
@@ -843,17 +772,15 @@ async def change_password(
                 content={"error": "User not found"}
             )
         
-        # Authenticate with current password
-        auth_user = await app.state.user_repo.authenticate(user.username, current_password)
-        
-        if not auth_user:
+        # Verify current password
+        if not await app.state.user_repo.authenticate(user["username"], current_password):
             return JSONResponse(
                 status_code=401,
                 content={"error": "Current password is incorrect"}
             )
         
-        # Update to new password
-        success = await app.state.user_repo.update_password(user_id, new_password)
+        # Update password
+        success = await app.state.user_repo.update_password(user["id"], new_password)
         
         if not success:
             return JSONResponse(
@@ -861,7 +788,7 @@ async def change_password(
                 content={"error": "Failed to update password"}
             )
         
-        logger.info(f"Password changed for user: {user.username}")
+        logger.info(f"Password changed for user: {user['username']}")
         return {"message": "Password changed successfully"}
     
     except Exception as e:
@@ -1056,7 +983,7 @@ async def clear_conversations():
         )
     
 # Document sharing endpoints
-@app.post("/api/documents/share", dependencies=[Depends(get_db)])
+@app.post("/api/documents/share")
 async def share_document(
     document_id: str = Form(...),
     owner_id: str = Form(...),
@@ -1108,7 +1035,7 @@ async def share_document(
             content={"error": f"Error sharing document: {str(e)}"}
         )
 
-@app.post("/api/documents/unshare", dependencies=[Depends(get_db)])
+@app.post("/api/documents/unshare")
 async def unshare_document(
     document_id: str = Form(...),
     owner_id: str = Form(...),
@@ -1152,7 +1079,7 @@ async def unshare_document(
         )
 
 # Migration utility endpoints
-@app.post("/api/admin/run-migration", dependencies=[Depends(get_db)])
+@app.post("/api/admin/run-migration")
 async def run_migration(background_tasks: BackgroundTasks):
     """Run the data migration from file-based storage to MongoDB."""
     try:
@@ -1171,7 +1098,7 @@ async def run_migration(background_tasks: BackgroundTasks):
             content={"error": f"Error starting migration: {str(e)}"}
         )
 
-@app.get("/api/admin/migration-status", dependencies=[Depends(get_db)])
+@app.get("/api/admin/migration-status")
 async def get_migration_status():
     """Check the status of data migration."""
     try:
@@ -1207,7 +1134,7 @@ async def check_ollama():
         )
 
 # Add endpoint to set LLM model
-@app.post("/api/set_model", dependencies=[Depends(get_db)])
+@app.post("/api/set_model")
 async def set_model(request: dict):
     """Set the current LLM model."""
     try:
@@ -1250,7 +1177,7 @@ async def get_models():
         )
 
 # Add endpoint to clear cache
-@app.post("/api/clear_cache", dependencies=[Depends(get_db)])
+@app.post("/api/clear_cache")
 async def clear_cache():
     """Clear application cache."""
     try:
@@ -1276,7 +1203,7 @@ async def clear_cache():
         )
 
 # Add endpoint to manage knowledge graph
-@app.post("/api/knowledge_graph/build", dependencies=[Depends(get_db)])
+@app.post("/api/knowledge_graph/build")
 async def build_knowledge_graph(user_id: Optional[str] = Form(None)):
     """Build or rebuild the knowledge graph from documents."""
     try:
@@ -1383,7 +1310,7 @@ def extract_sample_keywords(text: str, max_keywords: int = 5) -> List[str]:
     # Return top keywords
     return [word for word, _ in sorted_words[:max_keywords]]
 
-@app.get("/api/knowledge_graph/stats", dependencies=[Depends(get_db)])
+@app.get("/api/knowledge_graph/stats")
 async def get_knowledge_graph_stats(user_id: Optional[str] = Form(None)):
     """Get statistics about the knowledge graph."""
     try:
@@ -1613,19 +1540,9 @@ async def test_log_endpoints():
         logger.error(f"Debug endpoint error: {str(e)}")
         return {"error": f"Debug endpoint error: {str(e)}"}
     
-@app.post("/api/rebuild_index", dependencies=[Depends(get_db)])
+@app.post("/api/rebuild_index")
 async def rebuild_faiss_index():
-    """
-    Endpoint to rebuild the FAISS index used for vector similarity search.
-    
-    This endpoint:
-    1. Gets the async vector store from the app state
-    2. Forces a rebuild of the FAISS index by calling initialize_faiss_index()
-    3. Returns success/error message based on the rebuild result
-    
-    Returns:
-        JSON response with success message or error details
-    """
+    """Rebuild the FAISS index used for vector similarity search."""
     try:
         # Get async store from sync wrapper
         async_store = app.state.vector_store.async_store
@@ -1650,7 +1567,10 @@ async def rebuild_faiss_index():
         )
 
 @app.post("/api/chat/stream")
-async def streaming_chat(request: dict):
+async def streaming_chat(
+    request: dict,
+    current_user: TokenData = Depends(lambda: check_permission("chat:stream"))
+):
     """Stream chat responses token by token."""
     try:
         # Extract message and conversation ID from request
