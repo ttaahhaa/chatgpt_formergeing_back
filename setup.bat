@@ -49,7 +49,7 @@ echo =========================================
 echo.
 
 REM Redirect stdout and stderr to log file
-uvicorn app.main_mongodb:app --host 0.0.0.0 --port 8000 --reload >> %logfile% 2>&1
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload >> %logfile% 2>&1
 
 REM After exit
 echo.
