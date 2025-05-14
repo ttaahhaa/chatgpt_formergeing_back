@@ -100,6 +100,7 @@ class Conversation(BaseModel):
     
     class Config:
         arbitrary_types_allowed = True
+        allow_mutation = True  # Allow direct item assignment
         json_encoders = {
             datetime: lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v)
         }

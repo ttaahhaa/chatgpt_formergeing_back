@@ -235,18 +235,40 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/users/login")
 # Authentication dependency
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
     """Get the current authenticated user from the JWT token."""
-    return verify_token(token)
+    try:
+        token_data = verify_token(token)  # verify_token is not async, so no await needed
+        if not token_data:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid authentication credentials"
+            )
+        return token_data
+    except Exception as e:
+        logger.error(f"Authentication error: {str(e)}")
+        raise HTTPException(
+            status_code=401,
+            detail="Could not validate credentials"
+        )
 
 # Permission dependency
-async def check_permission(permission: str, current_user: TokenData = Depends(get_current_user)):
+def check_permission(permission: str):
     """Check if the current user has the required permission."""
-    has_permission = await app.state.user_repo.check_permission(current_user.user_id, permission)
-    if not has_permission:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
-        )
-    return current_user
+    async def _check_permission(current_user: TokenData = Depends(get_current_user)):
+        try:
+            has_permission = await app.state.user_repo.check_permission(current_user.user_id, permission)
+            if not has_permission:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Not enough permissions"
+                )
+            return current_user
+        except Exception as e:
+            logger.error(f"Permission check error: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error checking permissions: {str(e)}"
+            )
+    return _check_permission
 
 # API routes
 @app.get("/")
@@ -447,7 +469,10 @@ async def query(request: QueryRequest):
         )
 
 @app.post("/api/chat")
-async def chat(request: dict):
+async def chat(
+    request: dict,
+    current_user: TokenData = Depends(lambda: check_permission("chat:send"))
+):
     """Process a chat message and return a response."""
     try:
         # Extract message and conversation ID from request
@@ -471,6 +496,13 @@ async def chat(request: dict):
             conversation = await conversation_repo.find_by_id(conversation_id)
             
             if conversation:
+                # Check ownership
+                if conversation.owner_id != current_user.user_id:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": "You don't have permission to access this conversation"}
+                    )
+                    
                 # Convert ConversationMessage objects to dictionaries if needed
                 for msg in conversation.messages:
                     # Check if it's already a dict or needs conversion
@@ -491,51 +523,25 @@ async def chat(request: dict):
         # Determine if we should use documents based on the mode
         use_documents = mode == "documents_only" or mode == "auto"
         
+        # Get response from LLM
         if use_documents:
-            # Retrieve relevant documents using the vector store
-            relevant_docs = await app.state.vector_store.async_store.query(message, top_k=5)
+            # Get relevant documents
+            results = await app.state.vector_store.async_store.query(message, top_k=5)
             
-            # Get appropriate prompt based on document types
-            has_code = any(doc.get("filename", "").endswith(('.py', '.js', '.java', '.cpp', '.c', '.h', '.hpp', '.cs', '.go', '.rs', '.ts')) for doc in relevant_docs)
-            has_api = any("api" in doc.get("filename", "").lower() for doc in relevant_docs)
-            has_system = any("system" in doc.get("filename", "").lower() for doc in relevant_docs)
+            if not results:
+                logger.warning("No relevant documents found for query")
             
-            if has_code:
-                system_prompt = DOCUMENT_PROMPTS["code_documentation"]
-            elif has_api:
-                system_prompt = DOCUMENT_PROMPTS["api_documentation"]
-            elif has_system:
-                system_prompt = DOCUMENT_PROMPTS["system_documentation"]
-            else:
-                system_prompt = DOCUMENT_PROMPTS["system"]
-            
-            # Generate response with document context
-            response_with_sources = llm.query_with_sources(message, relevant_docs, system_prompt)
-            response = response_with_sources["response"]
-            sources = response_with_sources["sources"]
+            # Generate response with sources
+            llm_response = app.state.llm_chain.query_with_sources(
+                message, 
+                results
+            )
+            response = llm_response["response"]
+            sources = llm_response["sources"]
         else:
-            # Check if it's a code-related question
-            code_extensions = {'.py', '.js', '.java', '.cpp', '.c', '.h', '.hpp', '.cs', '.go', '.rs', '.ts'}
-            error_keywords = {'error', 'exception', 'fail', 'crash', 'bug', 'issue'}
-            how_to_keywords = {'how to', 'how do i', 'how can i', 'tutorial', 'guide'}
-            
-            is_code = any(ext in message.lower() for ext in code_extensions)
-            has_error = any(keyword in message.lower() for keyword in error_keywords)
-            is_how_to = any(keyword in message.lower() for keyword in how_to_keywords)
-            
-            if is_code:
-                if has_error:
-                    system_prompt = f"{CODE_PROMPTS['system']}\n\n{CODE_PROMPTS['error_handling']}"
-                elif is_how_to:
-                    system_prompt = f"{CODE_PROMPTS['system']}\n\n{CODE_PROMPTS['optimization']}"
-                else:
-                    system_prompt = CODE_PROMPTS['system']
-            else:
-                system_prompt = GENERAL_PROMPTS['system']
-            
-            # Just use the LLM without document context
-            response = llm.generate_response(message, conversation_context, system_prompt)
-            sources = []
+            # Generate general response
+            response = llm.generate_response(message, conversation_context)
+            sources = None
         
         # Save the conversation if conversation_id is provided
         if conversation_id:
@@ -559,6 +565,13 @@ async def chat(request: dict):
             conversation = await conversation_repo.find_by_id(conversation_id)
             
             if conversation:
+                # Check ownership
+                if conversation.owner_id != current_user.user_id:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": "You don't have permission to modify this conversation"}
+                    )
+                    
                 # Get existing messages
                 messages = conversation.messages
                 
@@ -576,6 +589,7 @@ async def chat(request: dict):
                 # Create new conversation
                 new_conversation = {
                     "id": conversation_id,
+                    "owner_id": current_user.user_id,
                     "messages": [user_message, assistant_message],
                     "preview": message[:50] + "..." if len(message) > 50 else message,
                     "last_updated": datetime.utcnow()
@@ -623,15 +637,13 @@ async def clear_documents():
         )
 
 @app.get("/api/documents")
-async def get_documents(user_id: Optional[str] = None):
+async def get_documents(
+    current_user: TokenData = Depends(check_permission("documents:view"))
+):
     """Get all documents in the system."""
     try:
-        if user_id:
-            # Get documents owned by or shared with this user
-            documents = await app.state.document_repo.find_accessible(user_id)
-        else:
-            # Get all documents
-            documents = await app.state.document_repo.find({})
+        # Get documents owned by or shared with this user
+        documents = await app.state.document_repo.find_accessible(current_user.user_id)
         
         docs = []
         for doc in documents:
@@ -800,11 +812,20 @@ async def change_password(
 
 # Conversations endpoints
 @app.post("/api/conversations/new")
-async def new_conversation():
+async def new_conversation(
+    current_user: TokenData = Depends(check_permission("chat:create"))
+):
     """Create a new conversation."""
     try:
+        # Ensure we have a valid user_id
+        if not current_user or not current_user.user_id:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "User not authenticated"}
+            )
+
         conversation_repo = repository_factory.conversation_repository
-        conversation_id = await conversation_repo.create_new_conversation()
+        conversation_id = await conversation_repo.create_new_conversation(current_user.user_id)
         
         if not conversation_id:
             return JSONResponse(
@@ -821,11 +842,13 @@ async def new_conversation():
         )
 
 @app.get("/api/conversations")
-async def get_conversations():
+async def get_conversations(
+    current_user: TokenData = Depends(lambda: check_permission("chat:view"))
+):
     """Returns a list of available conversations for the sidebar."""
     try:
         conversation_repo = repository_factory.conversation_repository
-        conversations = await conversation_repo.get_conversation_list()
+        conversations = await conversation_repo.get_conversation_list(current_user.user_id)
         return {"conversations": conversations}
     except Exception as e:
         logger.error(f"Error getting conversations: {str(e)}")
@@ -835,10 +858,21 @@ async def get_conversations():
         )
 
 @app.get("/api/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(
+    conversation_id: str,
+    current_user: TokenData = Depends(get_current_user)
+):
     """Get a specific conversation with its messages."""
     try:
         logger.info(f"Retrieving conversation: {conversation_id}")
+        
+        # Check if user has permission to view conversations
+        has_permission = await app.state.user_repo.check_permission(current_user.user_id, "chat:view")
+        if not has_permission:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "You don't have permission to view conversations"}
+            )
         
         conversation_repo = repository_factory.conversation_repository
         
@@ -851,22 +885,20 @@ async def get_conversation(conversation_id: str):
                 status_code=404,
                 content={"error": f"Conversation not found: {conversation_id}"}
             )
-        
-        # Convert message objects to dictionaries if they're not already
-        messages = []
-        for msg in conversation.messages:
-            if isinstance(msg, dict):
-                messages.append(msg)
-            else:
-                # If it's a Pydantic model
-                messages.append(msg.dict())
+            
+        # Check ownership
+        if conversation["owner_id"] != current_user.user_id:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "You don't have permission to view this conversation"}
+            )
         
         # Return in the format expected by frontend
         return {
-            "conversation_id": conversation.id,
-            "messages": messages,
-            "preview": conversation.preview,
-            "last_updated": conversation.last_updated.isoformat() if hasattr(conversation.last_updated, "isoformat") else conversation.last_updated
+            "conversation_id": conversation["id"],
+            "messages": conversation["messages"],
+            "preview": conversation["preview"],
+            "last_updated": conversation["last_updated"]
         }
     except Exception as e:
         logger.error(f"Error retrieving conversation: {str(e)}")
@@ -876,7 +908,10 @@ async def get_conversation(conversation_id: str):
         )
 
 @app.post("/api/conversations/save")
-async def save_conversation(data: dict):
+async def save_conversation(
+    data: dict,
+    current_user: TokenData = Depends(lambda: check_permission("chat:edit"))
+):
     """Save a conversation with proper field handling."""
     try:
         conversation_repo = repository_factory.conversation_repository
@@ -905,15 +940,18 @@ async def save_conversation(data: dict):
         # Ensure last_updated exists
         if not data.get("last_updated"):
             data["last_updated"] = datetime.utcnow()
-        print("----------------------------------------------------------------------------------------")
-        print(conv_id)
-        print(type(conv_id))
-        print("----------------------------------------------------------------------------------------")
-        
+            
         # Check if conversation exists
         existing = await conversation_repo.find_by_id(conv_id)
         
         if existing:
+            # Check ownership
+            if existing.owner_id != current_user.user_id:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "You don't have permission to edit this conversation"}
+                )
+                
             # Update existing conversation
             update_data = {
                 "messages": data.get("messages", []),
@@ -934,6 +972,7 @@ async def save_conversation(data: dict):
             
             conversation = Conversation(
                 id=conv_id,
+                owner_id=current_user.user_id,
                 messages=data.get("messages", []),
                 preview=data.get("preview", "New Conversation"),
                 last_updated=data.get("last_updated", datetime.utcnow())
@@ -956,7 +995,9 @@ async def save_conversation(data: dict):
         )
     
 @app.post("/api/conversations/clear")
-async def clear_conversations():
+async def clear_conversations(
+    current_user: TokenData = Depends(lambda: check_permission("chat:delete"))
+):
     """Clear all conversations."""
     try:
         logger.info("Clearing all conversations")
@@ -964,7 +1005,7 @@ async def clear_conversations():
         conversation_repo = repository_factory.conversation_repository
         
         # Use the MongoDB collection directly for a bulk delete operation
-        result = await conversation_repo.collection.delete_many({})
+        result = await conversation_repo.collection.delete_many({"owner_id": current_user.user_id})
         
         deleted_count = result.deleted_count
         logger.info(f"Deleted {deleted_count} conversations")
@@ -986,8 +1027,8 @@ async def clear_conversations():
 @app.post("/api/documents/share")
 async def share_document(
     document_id: str = Form(...),
-    owner_id: str = Form(...),
-    share_with_user_id: str = Form(...)
+    share_with_user_id: str = Form(...),
+    current_user: TokenData = Depends(lambda: check_permission("documents:share"))
 ):
     """Share a document with another user."""
     try:
@@ -1001,7 +1042,7 @@ async def share_document(
             )
         
         # Check ownership
-        if document.owner_id != owner_id:
+        if document.owner_id != current_user.user_id:
             return JSONResponse(
                 status_code=403,
                 content={"error": "You don't have permission to share this document"}
@@ -1038,8 +1079,8 @@ async def share_document(
 @app.post("/api/documents/unshare")
 async def unshare_document(
     document_id: str = Form(...),
-    owner_id: str = Form(...),
-    user_id: str = Form(...)
+    user_id: str = Form(...),
+    current_user: TokenData = Depends(lambda: check_permission("documents:share"))
 ):
     """Remove a user's access to a shared document."""
     try:
@@ -1053,7 +1094,7 @@ async def unshare_document(
             )
         
         # Check ownership
-        if document.owner_id != owner_id:
+        if document.owner_id != current_user.user_id:
             return JSONResponse(
                 status_code=403,
                 content={"error": "You don't have permission to modify sharing for this document"}
@@ -1740,4 +1781,4 @@ async def save_streaming_conversation(
 # Run server
 if __name__ == "__main__":
     logger.info("Starting FastAPI server with MongoDB support")
-    uvicorn.run("app.main_mongodb:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

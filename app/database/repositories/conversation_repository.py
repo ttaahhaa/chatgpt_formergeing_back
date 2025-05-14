@@ -64,16 +64,25 @@ class ConversationRepository(BaseRepository):
             # Generate a unique conversation ID
             conv_id = f"conv_{uuid.uuid4()}"
             
-            # Create new conversation
-            conversation = Conversation(
-                id=conv_id,
-                owner_id=owner_id,
-                messages=[],
-                preview="New Conversation",
-                last_updated=datetime.utcnow()
-            )
+            # Create new conversation document
+            conversation_doc = {
+                "id": conv_id,
+                "owner_id": owner_id,
+                "messages": [],
+                "preview": "New Conversation",
+                "last_updated": datetime.utcnow()
+            }
             
-            return await self.create(conversation)
+            # Insert directly into MongoDB
+            result = await self.collection.insert_one(conversation_doc)
+            
+            if result.inserted_id:
+                logger.info(f"Created new conversation: {conv_id}")
+                return conv_id
+            
+            logger.error("Failed to create conversation")
+            return None
+        
         except Exception as e:
             logger.error(f"Error creating conversation: {str(e)}")
             return None
@@ -92,17 +101,17 @@ class ConversationRepository(BaseRepository):
         """
         try:
             # Create message
-            message = ConversationMessage(
-                role=role,
-                content=content,
-                timestamp=datetime.utcnow()
-            )
+            message = {
+                "role": role,
+                "content": content,
+                "timestamp": datetime.utcnow().isoformat()
+            }
             
-            # Update conversation
+            # Update conversation using the id field
             result = await self.collection.update_one(
-                {"_id": conversation_id},
+                {"id": conversation_id},  # Changed from _id to id
                 {
-                    "$push": {"messages": message.dict()},
+                    "$push": {"messages": message},
                     "$set": {
                         "last_updated": datetime.utcnow(),
                         # Update preview if this is a user message
@@ -133,7 +142,7 @@ class ConversationRepository(BaseRepository):
         """
         try:
             result = await self.collection.update_one(
-                {"_id": conversation_id},
+                {"id": conversation_id},  # Changed from _id to id
                 {
                     "$set": {
                         "messages": [],
@@ -176,7 +185,7 @@ class ConversationRepository(BaseRepository):
                 {"$sort": {"last_updated": -1}},
                 {"$limit": limit},
                 {"$project": {
-                    "_id": 1,
+                    "id": 1,  # Changed from _id to id
                     "preview": 1,
                     "last_updated": 1,
                     "messageCount": {"$size": "$messages"}
@@ -188,7 +197,7 @@ class ConversationRepository(BaseRepository):
             
             async for doc in cursor:
                 results.append({
-                    "id": doc["_id"],
+                    "id": doc["id"],  # Changed from _id to id
                     "preview": doc["preview"],
                     "last_updated": doc["last_updated"],
                     "messageCount": doc["messageCount"]
