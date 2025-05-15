@@ -1816,6 +1816,7 @@ async def streaming_chat(
                                 conversation_id=conversation_id,
                                 user_message=message,
                                 assistant_response=response_text,
+                                current_user=current_user,
                                 sources=sources
                             )
                         
@@ -1863,6 +1864,7 @@ async def save_streaming_conversation(
     conversation_id: str,
     user_message: str,
     assistant_response: str,
+    current_user: TokenData,
     sources: list = None
 ) -> None:
     """Save streaming conversation after completion."""
