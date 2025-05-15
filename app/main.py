@@ -1,31 +1,45 @@
-import os
-import logging
-import tempfile
-from typing import Dict, List, Optional, Any
-from pathlib import Path
-import uvicorn
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import JSONResponse, StreamingResponse as FastAPIStreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from datetime import datetime
-from contextlib import asynccontextmanager
-import uuid
+# Python standard library imports
 import json
-import asyncio
+import logging
+import os
+import tempfile
 import traceback
+import uuid
+from contextlib import asynccontextmanager
+from asyncio import wait_for, TimeoutError as AsyncTimeoutError
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+import platform
+import sys
+import urllib.parse
+
+# Third-party imports
+import uvicorn
+import pymongo
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse as FastAPIStreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
+import psutil
+# Local imports
+from app.core.document_loader import DocumentLoader
+from app.core.hybrid_retrieval import HybridRetriever
+from app.core.llm import LLMChain
+from app.core.mongodb_logger import MongoDBLogHandler, test_mongodb_logger
+from app.core.vector_store_hybrid import get_hybrid_vector_store
+from app.database import initialize_database
+from app.database import close_database_connections
+from app.database.models import Conversation
+from app.database.config import mongodb_config
+from app.database.repositories.factory import repository_factory
 from app.utils.jwt_utils import create_access_token, verify_token, Token, TokenData
-from app.core.static_users import authenticate_user, get_user, verify_password
+from app.utils.logging_utils import setup_logging
+from app.core.llm_streaming import StreamingLLMChain
+from app.core.embeddings import Embeddings
+
 
 # Setup logging
-from app.utils.logging_utils import setup_logging
-from app.core.vector_store_hybrid import get_hybrid_vector_store
-from app.core.mongodb_logger import MongoDBLogHandler, test_mongodb_logger
-from app.core.llm_streaming import StreamingLLMChain, StreamingResponse
-
-# Set up logging directories and filenames
 today = datetime.now().strftime("%Y%m%d")
 base_dir = os.path.dirname(os.path.dirname(__file__))
 logs_dir = os.path.join(base_dir, "logs")
@@ -36,14 +50,6 @@ log_file = os.path.join(logs_dir, f"app_mongodb_{today}.log")
 # Setup standard file logger (INFO and above)
 logger = setup_logging(log_file=log_file, log_level="INFO", app_name="app_mongodb")
 logger.info("MongoDB API Service starting")
-
-# Import MongoDB and core components
-from app.database import initialize_database
-from app.database.repositories.factory import repository_factory
-from app.core.document_loader import DocumentLoader
-from app.core.llm import LLMChain
-from app.core.hybrid_retrieval import HybridRetriever
-from app.prompts import CODE_PROMPTS, GENERAL_PROMPTS, DOCUMENT_PROMPTS
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -96,11 +102,11 @@ async def lifespan(app: FastAPI):
                 else:
                     logger.error("Direct MongoDB logger test failed")
                     
-            except Exception as e:
-                logger.error(f"Error setting up MongoDB logger: {str(e)}")
+            except (ValueError, AttributeError) as e:
+                logger.error("Error setting up MongoDB logger: %s", str(e))
                 logger.error(traceback.format_exc())
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Error during startup: %s", str(e))
         logger.error(traceback.format_exc())
 
     yield  # This is where FastAPI runs and serves requests
@@ -108,11 +114,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     try:
         logger.info("Closing database connections")
-        from app.database import close_database_connections
         await close_database_connections()
         logger.info("Database connections closed")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Error during shutdown: %s", str(e))
         logger.error(traceback.format_exc())
 
 # Create FastAPI app with lifespan handler
@@ -236,23 +241,33 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/users/login")
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
     """Get the current authenticated user from the JWT token."""
     try:
-        token_data = verify_token(token)  # verify_token is not async, so no await needed
+        token_data = verify_token(token)
         if not token_data:
             raise HTTPException(
                 status_code=401,
                 detail="Invalid authentication credentials"
             )
         return token_data
-    except Exception as e:
-        logger.error(f"Authentication error: {str(e)}")
+    except (ValueError, TypeError) as e:
+        logger.error("Authentication error: %s", str(e))
         raise HTTPException(
             status_code=401,
             detail="Could not validate credentials"
-        )
+        ) from e
 
 # Permission dependency
 def check_permission(permission: str):
-    """Check if the current user has the required permission."""
+    """Check if the current user has the required permission.
+    
+    Args:
+        permission (str): The permission to check for.
+        
+    Returns:
+        A dependency function that checks the user's permission.
+        
+    Raises:
+        HTTPException: If the user doesn't have the required permission.
+    """
     async def _check_permission(current_user: TokenData = Depends(get_current_user)):
         try:
             has_permission = await app.state.user_repo.check_permission(current_user.user_id, permission)
@@ -262,17 +277,18 @@ def check_permission(permission: str):
                     detail="Not enough permissions"
                 )
             return current_user
-        except Exception as e:
-            logger.error(f"Permission check error: {str(e)}")
+        except (ValueError, AttributeError) as e:
+            logger.error("Permission check error: %s", str(e))
             raise HTTPException(
                 status_code=500,
                 detail=f"Error checking permissions: {str(e)}"
-            )
+            ) from e
     return _check_permission
 
 # API routes
 @app.get("/")
 async def root():
+    """Return a welcome message indicating the API is running."""
     logger.info("Root endpoint accessed")
     return {"message": "Document QA Assistant API with MongoDB is running"}
 
@@ -305,18 +321,17 @@ async def get_status():
                 llm_status = "available"
                 if ollama_status.get("models"):
                     current_model = ollama_status["models"][0]
-        except Exception as e:
-            logger.error(f"LLM status check failed: {str(e)}")
+        except (ConnectionError, RuntimeError) as e:
+            logger.error("LLM status check failed: %s", str(e))
 
         # Step 3: Check embedding model status
         embedding_status = "unavailable"
         try:
-            from app.core.embeddings import Embeddings
             embedding_model = Embeddings()
             model_status = embedding_model.check_model_status()
             embedding_status = model_status.get("status", "unavailable")
-        except Exception as e:
-            logger.error(f"Embedding status check failed: {str(e)}")
+        except (ConnectionError, RuntimeError) as e:
+            logger.error("Embedding status check failed: %s", str(e))
 
         # Step 4: MongoDB stats
         mongo_stats = {
@@ -326,10 +341,6 @@ async def get_status():
         }
 
         # Step 5: System info
-        import platform
-        import sys
-        import psutil
-
         system_info = {
             "os": platform.system(),
             "architecture": platform.machine(), 
@@ -353,11 +364,17 @@ async def get_status():
         logger.info("Status retrieved successfully")
         return status_data
 
-    except Exception as e:
-        logger.error(f"Error retrieving status: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error retrieving status: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid data format: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Invalid data format: {str(e)}"}
         )
 
 @app.post("/api/upload")
@@ -365,9 +382,20 @@ async def upload_document(
     file: UploadFile = File(...),
     current_user: TokenData = Depends(lambda: check_permission("documents:upload"))
 ):
-    """Upload a document to the system."""
+    """Upload a document to the system.
+    
+    Args:
+        file (UploadFile): The file to upload.
+        current_user (TokenData): The authenticated user.
+        
+    Returns:
+        JSON response indicating success or failure.
+        
+    Raises:
+        HTTPException: If there's an error processing the file.
+    """
     try:
-        logger.info(f"Uploading file: {file.filename}")
+        logger.info("Uploading file: %s", file.filename)
 
         # Save uploaded file to a temp path using the original filename
         temp_dir = tempfile.gettempdir()
@@ -387,6 +415,8 @@ async def upload_document(
             "extension": loaded.get("extension") or os.path.splitext(file.filename)[1].lower(),
             "content": loaded.get("content", ""),
             "metadata": loaded.get("metadata", {}),
+            "owner_id": current_user.user_id,  # Set document owner
+            "created_at": datetime.utcnow()
         }
         
         # Add to MongoDB via vector store
@@ -396,27 +426,39 @@ async def upload_document(
         os.unlink(temp_path)
 
         if success:
-            logger.info(f"Successfully uploaded {file.filename}")
+            logger.info("Successfully uploaded %s", file.filename)
             return {"message": f"Successfully uploaded {file.filename}"}
         else:
-            logger.error(f"Failed to add document to database: {file.filename}")
+            logger.error("Failed to add document to database: %s", file.filename)
             return JSONResponse(
                 status_code=500,
                 content={"error": "Failed to add document to database"}
             )
 
-    except Exception as e:
-        logger.error(f"Error processing document {file.filename}: {str(e)}")
+    except ValueError as e:
+        logger.error("Invalid document format: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid document format: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error processing document: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+    except OSError as e:
+        logger.error("File operation error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"File operation error: {str(e)}"}
         )
 
 @app.post("/api/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """Process a query against the document store."""
     try:
-        logger.info(f"Processing query: {request.query}")
+        logger.info("Processing query: %s", request.query)
         
         # Retrieve relevant documents
         results = await app.state.vector_store.async_store.query(request.query, top_k=5)
@@ -461,11 +503,17 @@ async def query(request: QueryRequest):
             }
         )
     
-    except Exception as e:
-        logger.error(f"Error processing query: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid query format: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid query format: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error processing query: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 @app.post("/api/chat")
@@ -587,7 +635,7 @@ async def chat(
                 })
             else:
                 # Create new conversation
-                new_conversation = {
+                conversation_data = {
                     "id": conversation_id,
                     "owner_id": current_user.user_id,
                     "messages": [user_message, assistant_message],
@@ -596,8 +644,7 @@ async def chat(
                 }
                 
                 # Use the Conversation model to create a new conversation
-                from app.database.models import Conversation
-                conversation_obj = Conversation(**new_conversation)
+                conversation_obj = Conversation(**conversation_data)
                 await conversation_repo.create(conversation_obj)
         
         # Return response
@@ -606,13 +653,25 @@ async def chat(
             "sources": sources,
             "conversation_id": conversation_id
         }
-    except Exception as e:
-        logger.error(f"Error processing chat message: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid request format: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid request format: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Chat processing error: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
-    
+    except (IOError, OSError) as e:
+        logger.error("File operation error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"File operation error: {str(e)}"}
+        )
+
 @app.post("/api/clear_documents")
 async def clear_documents():
     """Clear all documents from the system."""
@@ -629,11 +688,17 @@ async def clear_documents():
                 content={"error": "Failed to clear documents"}
             )
     
-    except Exception as e:
-        logger.error(f"Error clearing documents: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error clearing documents: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid operation error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Invalid operation error: {str(e)}"}
         )
 
 @app.get("/api/documents")
@@ -653,11 +718,17 @@ async def get_documents(
         
         return {"documents": docs}
     
-    except Exception as e:
-        logger.error(f"Error retrieving documents: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error retrieving documents: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid data format: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Invalid data format: {str(e)}"}
         )
 
 @app.post("/api/delete_document")
@@ -690,19 +761,25 @@ async def delete_document(
         success = await app.state.document_repo.delete(document_id)
         
         if success:
-            logger.info(f"Deleted document: {document_id}")
-            return {"message": f"Document deleted successfully"}
+            logger.info("Deleted document: %s", document_id)
+            return {"message": "Document deleted successfully"}
         else:
             return JSONResponse(
                 status_code=500,
                 content={"error": "Failed to delete document"}
             )
     
-    except Exception as e:
-        logger.error(f"Error deleting document: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error deleting document: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid document ID: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid document ID: {str(e)}"}
         )
 
 @app.post("/api/users/login", response_model=Token)
@@ -723,15 +800,15 @@ async def login_user(form_data: OAuth2PasswordRequestForm = Depends()):
             data={"sub": user["username"], "user_id": user["id"]}
         )
         
-        logger.info(f"User logged in: {user['username']}")
+        logger.info("User logged in: %s", user['username'])
         
         return {
             "access_token": access_token,
             "token_type": "bearer"
         }
     
-    except Exception as e:
-        logger.error(f"Error logging in: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Error logging in: %s", str(e))
         return JSONResponse(
             status_code=500,
             content={"error": f"Error logging in: {str(e)}"}
@@ -760,8 +837,8 @@ async def get_current_user_info(current_user: TokenData = Depends(get_current_us
             "created_at": user["created_at"]
         }
     
-    except Exception as e:
-        logger.error(f"Error retrieving user: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Error retrieving user: %s", str(e))
         return JSONResponse(
             status_code=500,
             content={"error": f"Error retrieving user: {str(e)}"}
@@ -800,14 +877,20 @@ async def change_password(
                 content={"error": "Failed to update password"}
             )
         
-        logger.info(f"Password changed for user: {user['username']}")
+        logger.info("Password changed for user: %s", user['username'])
         return {"message": "Password changed successfully"}
     
-    except Exception as e:
-        logger.error(f"Error changing password: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid password format: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid password format: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error changing password: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 # Conversations endpoints
@@ -834,11 +917,17 @@ async def new_conversation(
             )
         
         return {"conversation_id": conversation_id}
-    except Exception as e:
-        logger.error(f"Error creating conversation: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid user data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid user data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Failed to create conversation: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 @app.get("/api/conversations")
@@ -850,11 +939,17 @@ async def get_conversations(
         conversation_repo = repository_factory.conversation_repository
         conversations = await conversation_repo.get_conversation_list(current_user.user_id)
         return {"conversations": conversations}
-    except Exception as e:
-        logger.error(f"Error getting conversations: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid user data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid user data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Failed to load conversations: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 @app.get("/api/conversations/{conversation_id}")
@@ -864,7 +959,7 @@ async def get_conversation(
 ):
     """Get a specific conversation with its messages."""
     try:
-        logger.info(f"Retrieving conversation: {conversation_id}")
+        logger.info("Retrieving conversation: %s", conversation_id)
         
         # Check if user has permission to view conversations
         has_permission = await app.state.user_repo.check_permission(current_user.user_id, "chat:view")
@@ -880,7 +975,7 @@ async def get_conversation(
         conversation = await conversation_repo.find_by_id(conversation_id)
         
         if not conversation:
-            logger.warning(f"Conversation not found: {conversation_id}")
+            logger.warning("Conversation not found: %s", conversation_id)
             return JSONResponse(
                 status_code=404,
                 content={"error": f"Conversation not found: {conversation_id}"}
@@ -900,11 +995,17 @@ async def get_conversation(
             "preview": conversation["preview"],
             "last_updated": conversation["last_updated"]
         }
-    except Exception as e:
-        logger.error(f"Error retrieving conversation: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid conversation data: %s", str(e))
         return JSONResponse(
-            status_code=500, 
-            content={"error": f"Failed to retrieve conversation: {str(e)}"}
+            status_code=400,
+            content={"error": f"Invalid conversation data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 @app.post("/api/conversations/save")
@@ -923,7 +1024,7 @@ async def save_conversation(
                 content={"error": "conversation_id is required"}
             )
         
-        logger.info(f"Saving conversation: {conv_id}")
+        logger.info("Saving conversation: %s", conv_id)
         
         # Ensure all required fields exist
         if "messages" not in data and "history" in data:
@@ -968,8 +1069,6 @@ async def save_conversation(
         else:
             # Create new conversation
             # Use the Conversation model directly
-            from app.database.models import Conversation
-            
             conversation = Conversation(
                 id=conv_id,
                 owner_id=current_user.user_id,
@@ -985,15 +1084,21 @@ async def save_conversation(
                     content={"error": "Failed to create conversation"}
                 )
         
-        logger.info(f"Successfully saved conversation: {conv_id}")
+        logger.info("Successfully saved conversation: %s", conv_id)
         return {"status": "saved"}
-    except Exception as e:
-        logger.error(f"Error saving conversation: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid conversation data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid conversation data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Failed to save conversation: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
-    
+
 @app.post("/api/conversations/clear")
 async def clear_conversations(
     current_user: TokenData = Depends(lambda: check_permission("chat:delete"))
@@ -1008,7 +1113,7 @@ async def clear_conversations(
         result = await conversation_repo.collection.delete_many({"owner_id": current_user.user_id})
         
         deleted_count = result.deleted_count
-        logger.info(f"Deleted {deleted_count} conversations")
+        logger.info("Deleted %d conversations", deleted_count)
         
         if deleted_count > 0:
             return {"message": f"Successfully cleared {deleted_count} conversations"}
@@ -1016,13 +1121,19 @@ async def clear_conversations(
             logger.warning("No conversations found to clear")
             return {"message": "No conversations found to clear"}
             
-    except Exception as e:
-        logger.error(f"Error clearing conversations: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid user data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid user data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Failed to clear conversations: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
-    
+
 # Document sharing endpoints
 @app.post("/api/documents/share")
 async def share_document(
@@ -1061,7 +1172,7 @@ async def share_document(
         success = await app.state.document_repo.share_document(document_id, share_with_user_id)
         
         if success:
-            logger.info(f"Shared document {document_id} with user {share_with_user_id}")
+            logger.info("Shared document %s with user %s", document_id, share_with_user_id)
             return {"message": "Document shared successfully"}
         else:
             return JSONResponse(
@@ -1069,11 +1180,17 @@ async def share_document(
                 content={"error": "Failed to share document"}
             )
     
-    except Exception as e:
-        logger.error(f"Error sharing document: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid document or user data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid document or user data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error sharing document: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 @app.post("/api/documents/unshare")
@@ -1104,7 +1221,7 @@ async def unshare_document(
         success = await app.state.document_repo.unshare_document(document_id, user_id)
         
         if success:
-            logger.info(f"Removed sharing for document {document_id} from user {user_id}")
+            logger.info("Removed sharing for document %s from user %s", document_id, user_id)
             return {"message": "Document sharing removed successfully"}
         else:
             return JSONResponse(
@@ -1112,51 +1229,19 @@ async def unshare_document(
                 content={"error": "Failed to remove document sharing"}
             )
     
-    except Exception as e:
-        logger.error(f"Error removing document sharing: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid document or user data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid document or user data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error removing document sharing: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
-# Migration utility endpoints
-@app.post("/api/admin/run-migration")
-async def run_migration(background_tasks: BackgroundTasks):
-    """Run the data migration from file-based storage to MongoDB."""
-    try:
-        # Import migration utility
-        from app.database.migration_utility import run_migration
-        
-        # Run migration in background
-        background_tasks.add_task(run_migration)
-        
-        return {"message": "Migration started in background"}
-    
-    except Exception as e:
-        logger.error(f"Error starting migration: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error starting migration: {str(e)}"}
-        )
-
-@app.get("/api/admin/migration-status")
-async def get_migration_status():
-    """Check the status of data migration."""
-    try:
-        # Import migration utility
-        from app.database.migration_utility import migration_utility
-        
-        # Verify migration
-        verification = await migration_utility.verify_migration()
-        
-        return verification
-    
-    except Exception as e:
-        logger.error(f"Error checking migration status: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error checking migration status: {str(e)}"}
-        )
 
 # Add endpoint to check Ollama status
 @app.get("/api/check_ollama")
@@ -1165,13 +1250,19 @@ async def check_ollama():
     try:
         logger.info("Checking Ollama status")
         status = app.state.llm_chain.check_ollama_status()
-        logger.info(f"Ollama status: {status}")
+        logger.info("Ollama status: %s", status)
         return status
-    except Exception as e:
-        logger.error(f"Error checking Ollama: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Ollama service error: %s", str(e))
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "error": f"Ollama service error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid Ollama response: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"status": "unavailable", "error": f"Error checking Ollama: {str(e)}"}
+            content={"status": "unavailable", "error": f"Invalid Ollama response: {str(e)}"}
         )
 
 # Add endpoint to set LLM model
@@ -1189,11 +1280,17 @@ async def set_model(request: dict):
         app.state.llm_chain.model_name = model
         
         return {"message": f"Model updated to {model}"}
-    except Exception as e:
-        logger.error(f"Error setting model: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid model data: %s", str(e))
         return JSONResponse(
-            status_code=500,
-            content={"error": f"Error setting model: {str(e)}"}
+            status_code=400,
+            content={"error": f"Invalid model data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Model service error: %s", str(e))
+        return JSONResponse(
+            status_code=503,
+            content={"error": f"Model service error: {str(e)}"}
         )
 
 # Add endpoint to get available models
@@ -1210,11 +1307,17 @@ async def get_models():
             "models": models,
             "current_model": current_model
         }
-    except Exception as e:
-        logger.error(f"Error getting models: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Model service error: %s", str(e))
+        return JSONResponse(
+            status_code=503,
+            content={"error": f"Model service error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid model data: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error getting models: {str(e)}"}
+            content={"error": f"Invalid model data: {str(e)}"}
         )
 
 # Add endpoint to clear cache
@@ -1236,11 +1339,17 @@ async def clear_cache():
                 status_code=500,
                 content={"error": "Failed to clear cache"}
             )
-    except Exception as e:
-        logger.error(f"Error clearing cache: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Cache operation error: %s", str(e))
+        return JSONResponse(
+            status_code=503,
+            content={"error": f"Cache operation error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid cache data: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error clearing cache: {str(e)}"}
+            content={"error": f"Invalid cache data: {str(e)}"}
         )
 
 # Add endpoint to manage knowledge graph
@@ -1269,8 +1378,6 @@ async def build_knowledge_graph(user_id: Optional[str] = Form(None)):
             documents = await app.state.document_repo.find({})
         
         # Process documents to build the graph
-        # This is a simplified example - in a real implementation,
-        # you would process document text to extract entities and relationships
         node_count = 0
         edge_count = 0
         
@@ -1286,9 +1393,7 @@ async def build_knowledge_graph(user_id: Optional[str] = Form(None)):
             if doc_node_id:
                 node_count += 1
                 
-                # Process document content (simplified example)
-                # In a real implementation, use NLP to extract entities
-                # For simplicity, just extract some keywords
+                # Process document content
                 keywords = extract_sample_keywords(doc.content)
                 
                 for keyword in keywords:
@@ -1316,7 +1421,7 @@ async def build_knowledge_graph(user_id: Optional[str] = Form(None)):
         # Get final graph stats
         stats = await kg_repo.get_graph_stats(graph_id)
         
-        logger.info(f"Knowledge graph built with {stats.get('nodes', 0)} nodes and {stats.get('edges', 0)} edges")
+        logger.info("Knowledge graph built with %d nodes and %d edges", stats.get('nodes', 0), stats.get('edges', 0))
         
         return {
             "message": "Knowledge graph built successfully",
@@ -1324,11 +1429,17 @@ async def build_knowledge_graph(user_id: Optional[str] = Form(None)):
             "stats": stats
         }
     
-    except Exception as e:
-        logger.error(f"Error building knowledge graph: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid graph data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid graph data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error building knowledge graph: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 # Helper function for keyword extraction (simplified)
@@ -1372,11 +1483,17 @@ async def get_knowledge_graph_stats(user_id: Optional[str] = Form(None)):
         
         return stats
     
-    except Exception as e:
-        logger.error(f"Error getting knowledge graph stats: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid graph data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid graph data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Error getting knowledge graph stats: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
         )
 
 # Add these fixed endpoints to your app/main_mongodb.py file
@@ -1385,9 +1502,6 @@ async def get_knowledge_graph_stats(user_id: Optional[str] = Form(None)):
 async def get_logs():
     """Get a list of all log files with timeout protection."""
     try:
-        # Set a timeout for database operations
-        from asyncio import wait_for, TimeoutError
-        
         # Wrap the repository call with a timeout
         try:
             # Get log repository
@@ -1402,32 +1516,37 @@ async def get_logs():
                 return {"logs": []}
                 
             # Add debug information
-            logger.info(f"Found {len(logs)} log files")
+            logger.info("Found %d log files", len(logs))
             return {"logs": logs}
             
-        except TimeoutError:
+        except AsyncTimeoutError:
             logger.error("Timeout fetching log files")
             # Return a fallback response
-            from datetime import datetime
-            today = datetime.now().strftime("%Y%m%d")
+            current_date = datetime.now().strftime("%Y%m%d")
             return {
                 "logs": [{
-                    "filename": f"mongodb_{today}.log",
+                    "filename": f"mongodb_{current_date}.log",
                     "size": 1024,  # Placeholder size
                     "last_modified": int(datetime.now().timestamp())
                 }]
             }
-    except Exception as e:
-        logger.error(f"Error getting log files: {str(e)}")
-        return {"error": f"Error getting log files: {str(e)}"}
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid log data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid log data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Database operation error: {str(e)}"}
+        )
 
 @app.get("/api/logs/{filename}")
 async def get_log_content(filename: str):
     """Get the content of a specific log file with fallback mechanism."""
     try:
-        # Set a timeout for database operations
-        from asyncio import wait_for, TimeoutError
-        
         # Try to get the logs with a timeout
         try:
             log_repo = repository_factory.log_repository
@@ -1438,8 +1557,8 @@ async def get_log_content(filename: str):
                 "filename": filename,
                 "content": content
             }
-        except TimeoutError:
-            logger.error(f"Timeout fetching log content for {filename}")
+        except AsyncTimeoutError:
+            logger.error("Timeout fetching log content for %s", filename)
             
             # Query MongoDB directly as a fallback
             try:
@@ -1498,7 +1617,7 @@ async def get_log_content(filename: str):
                         
                         log_line = f"{timestamp} - {level} - {source} - {message}"
                         log_lines.append(log_line)
-                    except Exception as format_error:
+                    except (ValueError, AttributeError) as format_error:
                         log_lines.append(f"Error formatting log: {str(format_error)}")
                 
                 content = "\n".join(log_lines) if log_lines else f"No logs found for {date_str}"
@@ -1511,16 +1630,25 @@ async def get_log_content(filename: str):
                     "content": content
                 }
                 
-            except Exception as direct_error:
-                logger.error(f"Direct MongoDB access failed: {str(direct_error)}")
+            except (ConnectionError, RuntimeError) as direct_error:
+                logger.error("Direct MongoDB access failed: %s", str(direct_error))
                 return {
                     "filename": filename,
                     "content": f"Error retrieving logs: Repository timeout and direct access failed.\n{str(direct_error)}"
                 }
                 
-    except Exception as e:
-        logger.error(f"Error reading log file {filename}: {str(e)}")
-        return {"error": f"Error reading log file: {str(e)}"}
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid log data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid log data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Database operation error: {str(e)}"}
+        )
 
 # Add this debug endpoint to help troubleshoot
 @app.get("/api/logs/debug/test")
@@ -1532,13 +1660,10 @@ async def test_log_endpoints():
         logger.error("Test error log from debug endpoint")
         
         # Get the current date
-        today = datetime.now().strftime("%Y%m%d")
-        filename = f"mongodb_{today}.log"
+        current_date = datetime.now().strftime("%Y%m%d")
+        filename = f"mongodb_{current_date}.log"
         
         # Try direct PyMongo access
-        import pymongo
-        import urllib.parse
-        from app.database.config import mongodb_config
         
         # Set up direct MongoDB connection
         username = urllib.parse.quote_plus(mongodb_config.username)
@@ -1577,8 +1702,8 @@ async def test_log_endpoints():
             "today_filename": filename
         }
         
-    except Exception as e:
-        logger.error(f"Debug endpoint error: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Debug endpoint error: %s", str(e))
         return {"error": f"Debug endpoint error: {str(e)}"}
     
 @app.post("/api/rebuild_index")
@@ -1600,8 +1725,8 @@ async def rebuild_faiss_index():
                 content={"error": "Failed to rebuild FAISS index"}
             )
     
-    except Exception as e:
-        logger.error(f"Error rebuilding FAISS index: {str(e)}")
+    except (ConnectionError, RuntimeError, ValueError) as e:
+        logger.error("Error rebuilding FAISS index: %s", str(e))
         return JSONResponse(
             status_code=500,
             content={"error": f"Error rebuilding FAISS index: {str(e)}"}
@@ -1625,7 +1750,7 @@ async def streaming_chat(
                 content={"error": "Message is required"}
             )
         
-        logger.info(f"Starting streaming chat for message: {message[:50]}...")
+        logger.info("Starting streaming chat for message: %s...", message[:50])
         
         # Get conversation context if ID provided
         conversation_context = []
@@ -1699,8 +1824,8 @@ async def streaming_chat(
                 # Send final event
                 yield "data: [DONE]\n\n"
                 
-            except Exception as e:
-                logger.error(f"Error in token generator: {str(e)}")
+            except (ConnectionError, RuntimeError) as e:
+                logger.error("Streaming error: %s", str(e))
                 yield f"data: {json.dumps({'error': f'Streaming error: {str(e)}'})}\n\n"
                 yield "data: [DONE]\n\n"
         
@@ -1715,11 +1840,23 @@ async def streaming_chat(
             }
         )
     
-    except Exception as e:
-        logger.error(f"Error in streaming chat endpoint: {str(e)}")
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid request format: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid request format: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
         return JSONResponse(
             status_code=500,
-            content={"error": f"Streaming chat error: {str(e)}"}
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+    except (IOError, OSError) as e:
+        logger.error("Streaming error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Streaming error: {str(e)}"}
         )
 
 async def save_streaming_conversation(
@@ -1762,21 +1899,26 @@ async def save_streaming_conversation(
             })
         else:
             # Create new conversation
-            from app.database.models import Conversation
+            conversation_data = {
+                "id": conversation_id,
+                "owner_id": current_user.user_id,
+                "messages": [user_msg, assistant_msg],
+                "preview": user_message[:50] + "..." if len(user_message) > 50 else user_message,
+                "last_updated": datetime.utcnow()
+            }
             
-            new_conversation = Conversation(
-                id=conversation_id,
-                messages=[user_msg, assistant_msg],
-                preview=user_message[:50] + "..." if len(user_message) > 50 else user_message,
-                last_updated=datetime.utcnow()
-            )
-            
-            await conversation_repo.create(new_conversation)
+            # Use the Conversation model to create a new conversation
+            conversation_obj = Conversation(**conversation_data)
+            await conversation_repo.create(conversation_obj)
         
-        logger.info(f"Saved streaming conversation: {conversation_id}")
+        logger.info("Saved streaming conversation: %s", conversation_id)
         
-    except Exception as e:
-        logger.error(f"Error saving streaming conversation: {str(e)}")
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid conversation data: %s", str(e))
+    except (IOError, OSError) as e:
+        logger.error("File operation error: %s", str(e))
     
 # Run server
 if __name__ == "__main__":

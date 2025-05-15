@@ -37,7 +37,8 @@ class RepositoryFactory:
             "document": DocumentRepository,
             "embedding": EmbeddingRepository,
             "conversation": ConversationRepository,
-            "log": LogRepository
+            "log": LogRepository,
+            "knowledge_graph": KnowledgeGraphRepository
         }
         
         # Repository instances
@@ -84,6 +85,11 @@ class RepositoryFactory:
     def log_repository(self) -> LogRepository:
         """Get the log repository."""
         return self.get_repository("log")
+    
+    @property
+    def knowledge_graph_repository(self) -> KnowledgeGraphRepository:
+        """Get the knowledge graph repository."""
+        return self.get_repository("knowledge_graph")
     
     async def close(self):
         """Close the MongoDB connection."""
