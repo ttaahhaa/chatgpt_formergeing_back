@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse as FastAPIStreamin
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 import psutil
+import jwt
 # Local imports
 from app.core.document_loader import DocumentLoader
 from app.core.hybrid_retrieval import HybridRetriever
@@ -248,12 +249,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
                 detail="Invalid authentication credentials"
             )
         return token_data
-    except (ValueError, TypeError) as e:
-        logger.error("Authentication error: %s", str(e))
+    except jwt.PyJWTError as exc:
+        logger.error("Authentication error: Invalid token")
         raise HTTPException(
             status_code=401,
             detail="Could not validate credentials"
-        ) from e
+        ) from exc
 
 # Permission dependency
 def check_permission(permission: str):
@@ -380,7 +381,7 @@ async def get_status():
 @app.post("/api/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    current_user: TokenData = Depends(lambda: check_permission("documents:upload"))
+    current_user: TokenData = Depends(check_permission("documents:upload"))
 ):
     """Upload a document to the system.
     
@@ -734,7 +735,7 @@ async def get_documents(
 @app.post("/api/delete_document")
 async def delete_document(
     document_id: str = Form(...),
-    current_user: TokenData = Depends(lambda: check_permission("documents:delete"))
+    current_user: TokenData = Depends(check_permission("documents:delete"))
 ):
     """Delete a document from the system."""
     try:
@@ -748,7 +749,8 @@ async def delete_document(
             )
         
         # Check ownership if user_id provided
-        if document.owner_id and document.owner_id != current_user.user_id:
+        owner_id = document["owner_id"] if isinstance(document, dict) else document.owner_id
+        if owner_id and owner_id != current_user.user_id:
             return JSONResponse(
                 status_code=403,
                 content={"error": "You don't have permission to delete this document"}
@@ -932,10 +934,18 @@ async def new_conversation(
 
 @app.get("/api/conversations")
 async def get_conversations(
-    current_user: TokenData = Depends(lambda: check_permission("chat:view"))
+    current_user: TokenData = Depends(get_current_user)
 ):
     """Returns a list of available conversations for the sidebar."""
     try:
+        # Check if user has permission to view conversations
+        has_permission = await app.state.user_repo.check_permission(current_user.user_id, "chat:view")
+        if not has_permission:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "You don't have permission to view conversations"}
+            )
+
         conversation_repo = repository_factory.conversation_repository
         conversations = await conversation_repo.get_conversation_list(current_user.user_id)
         return {"conversations": conversations}
@@ -951,7 +961,7 @@ async def get_conversations(
             status_code=500,
             content={"error": f"Database operation error: {str(e)}"}
         )
-
+    
 @app.get("/api/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
@@ -982,7 +992,8 @@ async def get_conversation(
             )
             
         # Check ownership
-        if conversation["owner_id"] != current_user.user_id:
+        owner_id = conversation["owner_id"] if isinstance(conversation, dict) else conversation.owner_id
+        if owner_id != current_user.user_id:
             return JSONResponse(
                 status_code=403,
                 content={"error": "You don't have permission to view this conversation"}
@@ -990,10 +1001,10 @@ async def get_conversation(
         
         # Return in the format expected by frontend
         return {
-            "conversation_id": conversation["id"],
-            "messages": conversation["messages"],
-            "preview": conversation["preview"],
-            "last_updated": conversation["last_updated"]
+            "conversation_id": conversation["id"] if isinstance(conversation, dict) else conversation.id,
+            "messages": conversation["messages"] if isinstance(conversation, dict) else conversation.messages,
+            "preview": conversation["preview"] if isinstance(conversation, dict) else conversation.preview,
+            "last_updated": conversation["last_updated"] if isinstance(conversation, dict) else conversation.last_updated
         }
     except (ValueError, AttributeError) as e:
         logger.error("Invalid conversation data: %s", str(e))
@@ -1007,7 +1018,7 @@ async def get_conversation(
             status_code=500,
             content={"error": f"Database operation error: {str(e)}"}
         )
-
+    
 @app.post("/api/conversations/save")
 async def save_conversation(
     data: dict,
@@ -1101,7 +1112,7 @@ async def save_conversation(
 
 @app.post("/api/conversations/clear")
 async def clear_conversations(
-    current_user: TokenData = Depends(lambda: check_permission("chat:delete"))
+    current_user: TokenData = Depends(check_permission("chat:delete"))
 ):
     """Clear all conversations."""
     try:
@@ -1759,8 +1770,9 @@ async def streaming_chat(
             conversation = await conversation_repo.find_by_id(conversation_id)
             
             if conversation:
-                # Format conversation context
-                for msg in conversation.messages:
+                # Use correct way to access messages
+                messages = conversation["messages"] if isinstance(conversation, dict) else conversation.messages
+                for msg in messages:
                     if isinstance(msg, dict):
                         if "role" in msg and "content" in msg:
                             conversation_context.append({
