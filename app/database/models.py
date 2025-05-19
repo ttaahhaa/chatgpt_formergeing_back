@@ -4,7 +4,7 @@ Defines schemas for all collections.
 """
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from zoneinfo import ZoneInfo  # For timezone support
 
 class User(BaseModel):
@@ -17,8 +17,8 @@ class User(BaseModel):
     is_active: bool = True
     role: str = "user"  # Options: "user", "admin"
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "username": "user1",
                 "email": "user1@example.com",
@@ -29,6 +29,7 @@ class User(BaseModel):
                 "role": "user"
             }
         }
+    )
 
 class Document(BaseModel):
     """Document model for storing document metadata and content."""
@@ -42,8 +43,8 @@ class Document(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "doc_12345",
                 "filename": "example.pdf",
@@ -60,6 +61,7 @@ class Document(BaseModel):
                 "updated_at": "2023-01-01T00:00:00"
             }
         }
+    )
 
 class Embedding(BaseModel):
     """Document embedding model for vector search."""
@@ -68,8 +70,8 @@ class Embedding(BaseModel):
     embedding_model: str = "arabert"  # Model used to generate embedding
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "document_id": "doc_12345",
                 "embedding": [0.1, 0.2, 0.3, 0.4],  # Truncated for brevity
@@ -77,6 +79,7 @@ class Embedding(BaseModel):
                 "created_at": "2023-01-01T00:00:00"
             }
         }
+    )
 
 class ConversationMessage(BaseModel):
     """Individual message in a conversation."""
@@ -84,11 +87,12 @@ class ConversationMessage(BaseModel):
     content: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    class Config:
-        arbitrary_types_allowed = True
-        json_encoders = {
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        json_encoders={
             datetime: lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v)
         }
+    )
 
 class Conversation(BaseModel):
     """Conversation model for storing chat history."""
@@ -98,13 +102,12 @@ class Conversation(BaseModel):
     preview: str = "New Conversation"  # Preview/title for UI
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
-    class Config:
-        arbitrary_types_allowed = True
-        allow_mutation = True  # Allow direct item assignment
-        json_encoders = {
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        json_encoders={
             datetime: lambda v: v.isoformat() if hasattr(v, "isoformat") else str(v)
-        }
-        schema_extra = {
+        },
+        json_schema_extra={
             "example": {
                 "id": "conv_12345",
                 "owner_id": "user_12345",
@@ -124,6 +127,7 @@ class Conversation(BaseModel):
                 "last_updated": "2023-01-01T12:00:05"
             }
         }
+    )
 
 class Log(BaseModel):
     """Log entry model for storing application logs."""
@@ -134,8 +138,8 @@ class Log(BaseModel):
     source: str = "application"
     metadata: Dict[str, Any] = {}
     
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "log_12345",
                 "level": "INFO",
@@ -148,6 +152,7 @@ class Log(BaseModel):
                 }
             }
         }
+    )
         
 class KnowledgeGraphNode(BaseModel):
     """Node in the knowledge graph."""
