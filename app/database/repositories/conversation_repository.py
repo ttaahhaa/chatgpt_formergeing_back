@@ -107,17 +107,21 @@ class ConversationRepository(BaseRepository):
                 "timestamp": datetime.utcnow().isoformat()
             }
             
+            # Update fields to set
+            update_fields = {
+                "$push": {"messages": message},
+                "$set": {"last_updated": datetime.utcnow()}
+            }
+            
+            # Update preview if this is a user message
+            if role == "user":
+                preview_text = content[:50] + "..." if len(content) > 50 else content
+                update_fields["$set"]["preview"] = preview_text
+            
             # Update conversation using the id field
             result = await self.collection.update_one(
-                {"id": conversation_id},  # Changed from _id to id
-                {
-                    "$push": {"messages": message},
-                    "$set": {
-                        "last_updated": datetime.utcnow(),
-                        # Update preview if this is a user message
-                        "preview": content[:50] + "..." if role == "user" else None
-                    }
-                }
+                {"id": conversation_id},
+                update_fields
             )
             
             if result.modified_count > 0:
@@ -129,7 +133,7 @@ class ConversationRepository(BaseRepository):
         except Exception as e:
             logger.error(f"Error adding message: {str(e)}")
             return False
-    
+        
     async def clear_messages(self, conversation_id: str) -> bool:
         """
         Clear all messages from a conversation.
@@ -185,10 +189,42 @@ class ConversationRepository(BaseRepository):
                 {"$sort": {"last_updated": -1}},
                 {"$limit": limit},
                 {"$project": {
-                    "id": 1,  # Changed from _id to id
-                    "preview": 1,
+                    "id": 1,
                     "last_updated": 1,
-                    "messageCount": {"$size": "$messages"}
+                    "messageCount": {"$size": "$messages"},
+                    # Extract first user message as preview if messages exist
+                    "preview": {
+                        "$cond": {
+                            "if": {"$gt": [{"$size": "$messages"}, 0]},
+                            "then": {
+                                "$let": {
+                                    "vars": {
+                                        "userMessages": {
+                                            "$filter": {
+                                                "input": "$messages",
+                                                "as": "msg",
+                                                "cond": {"$eq": ["$$msg.role", "user"]}
+                                            }
+                                        }
+                                    },
+                                    "in": {
+                                        "$cond": {
+                                            "if": {"$gt": [{"$size": "$$userMessages"}, 0]},
+                                            "then": {
+                                                "$substr": [
+                                                    {"$arrayElemAt": ["$$userMessages.content", 0]}, 
+                                                    0, 
+                                                    50
+                                                ]
+                                            },
+                                            "else": "New Conversation"
+                                        }
+                                    }
+                                }
+                            },
+                            "else": "New Conversation"
+                        }
+                    }
                 }}
             ]
             
@@ -197,8 +233,8 @@ class ConversationRepository(BaseRepository):
             
             async for doc in cursor:
                 results.append({
-                    "id": doc["id"],  # Changed from _id to id
-                    "preview": doc["preview"],
+                    "id": doc["id"],
+                    "preview": doc["preview"] + "..." if len(doc["preview"]) >= 50 else doc["preview"],
                     "last_updated": doc["last_updated"],
                     "messageCount": doc["messageCount"]
                 })
@@ -207,3 +243,4 @@ class ConversationRepository(BaseRepository):
         except Exception as e:
             logger.error(f"Error getting conversation list: {str(e)}")
             return []
+        

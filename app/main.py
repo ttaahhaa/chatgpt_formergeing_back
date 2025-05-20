@@ -1164,6 +1164,63 @@ async def clear_conversations(
             content={"error": f"Database operation error: {str(e)}"}
         )
 
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    current_user: TokenData = Depends(check_permission("chat:delete"))
+):
+    """Delete a single conversation by ID."""
+    try:
+        logger.info("Deleting conversation: %s", conversation_id)
+        
+        conversation_repo = repository_factory.conversation_repository
+        
+        # Get the conversation first to check ownership
+        conversation = await conversation_repo.find_by_id(conversation_id)
+        
+        if not conversation:
+            logger.warning("Conversation not found: %s", conversation_id)
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Conversation not found: {conversation_id}"}
+            )
+        
+        # Check ownership
+        owner_id = conversation.get("owner_id") if isinstance(conversation, dict) else conversation.owner_id
+        if owner_id != current_user.user_id:
+            logger.warning("User %s attempted to delete conversation %s owned by %s", 
+                         current_user.user_id, conversation_id, owner_id)
+            return JSONResponse(
+                status_code=403,
+                content={"error": "You don't have permission to delete this conversation"}
+            )
+        
+        # Delete the conversation
+        result = await conversation_repo.delete(conversation_id)
+        
+        if result:
+            logger.info("Successfully deleted conversation: %s", conversation_id)
+            return {"message": "Conversation deleted successfully"}
+        else:
+            logger.error("Failed to delete conversation: %s", conversation_id)
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to delete conversation"}
+            )
+            
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid conversation data: %s", str(e))
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid conversation data: {str(e)}"}
+        )
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+
 # Document sharing endpoints
 @app.post("/api/documents/share")
 async def share_document(
