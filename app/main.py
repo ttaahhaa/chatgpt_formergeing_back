@@ -1978,7 +1978,13 @@ async def save_streaming_conversation(
         
         if conversation:
             # Update existing conversation
-            messages = conversation.messages
+            # Create a new list with existing messages plus new ones
+            existing_messages = conversation.messages if hasattr(conversation, 'messages') else []
+            if isinstance(conversation, dict):
+                existing_messages = conversation.get('messages', [])
+            
+            # Create new list with all messages
+            messages = list(existing_messages)  # Create a new list
             messages.append(user_msg)
             messages.append(assistant_msg)
             
