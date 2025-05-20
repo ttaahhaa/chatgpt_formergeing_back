@@ -20,7 +20,30 @@ ROLES = {
         "permissions": ["chat:stream"]
     },
     "chat_user_with_documents": {
-        "permissions": ["chat:stream", "documents:upload", "documents:delete"]
+        "permissions": [
+            "chat:stream",
+            "documents:upload",
+            "documents:delete",
+            "documents:view",
+            "chat:view",
+            "chat:create",
+            "chat:edit",
+            "chat:delete"
+        ]
+    },
+    "settings_user_with_documents": {
+        "permissions": [
+            "chat:stream",
+            "documents:upload",
+            "documents:delete",
+            "documents:view",
+            "chat:view",
+            "chat:create",
+            "chat:edit",
+            "chat:delete",
+            "settings:view",
+            "settings:edit"
+        ]
     }
 }
 
@@ -54,6 +77,16 @@ for i in range(1, 6):
         "password": "doc123",
         "role": "chat_user_with_documents",
         "description": f"Chat user {i} (chat + document access)"
+    })
+
+# Add 5 settings users with document access
+for i in range(1, 6):
+    INITIAL_USERS.append({
+        "username": f"settings_user{i}",
+        "email": f"settings_user{i}@example.com",
+        "password": "settings123",
+        "role": "settings_user_with_documents",
+        "description": f"Settings user {i} (chat + document + settings access)"
     })
 
 async def init_users():
