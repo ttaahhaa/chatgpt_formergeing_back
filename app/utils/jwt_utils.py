@@ -39,7 +39,14 @@ def verify_token(token: str) -> TokenData:
         if username is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
+                detail="Could not validate credentials: missing username",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials: missing user_id",
                 headers={"WWW-Authenticate": "Bearer"},
             )
             

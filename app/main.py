@@ -243,17 +243,26 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
     """Get the current authenticated user from the JWT token."""
     try:
         token_data = verify_token(token)
-        if not token_data:
+        if not token_data or not token_data.user_id:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid authentication credentials"
+                detail="Invalid authentication credentials: missing user data"
             )
         return token_data
     except jwt.PyJWTError as exc:
-        logger.error("Authentication error: Invalid token")
+        logger.error("Authentication error: Invalid token - %s", str(exc))
         raise HTTPException(
             status_code=401,
             detail="Could not validate credentials"
+        ) from exc
+    except HTTPException as exc:
+        # Re-raise HTTP exceptions from verify_token
+        raise exc
+    except Exception as exc:
+        logger.error("Unexpected authentication error: %s", str(exc))
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during authentication"
         ) from exc
 
 # Permission dependency
@@ -520,7 +529,7 @@ async def query(request: QueryRequest):
 @app.post("/api/chat")
 async def chat(
     request: dict,
-    current_user: TokenData = Depends(lambda: check_permission("chat:send"))
+    current_user: TokenData = Depends(check_permission("chat:send"))
 ):
     """Process a chat message and return a response."""
     try:
@@ -992,7 +1001,7 @@ async def get_conversation(
             )
             
         # Check ownership
-        owner_id = conversation["owner_id"] if isinstance(conversation, dict) else conversation.owner_id
+        owner_id = conversation.get("owner_id") if isinstance(conversation, dict) else conversation.owner_id
         if owner_id != current_user.user_id:
             return JSONResponse(
                 status_code=403,
@@ -1022,10 +1031,17 @@ async def get_conversation(
 @app.post("/api/conversations/save")
 async def save_conversation(
     data: dict,
-    current_user: TokenData = Depends(lambda: check_permission("chat:edit"))
+    current_user: TokenData = Depends(get_current_user)
 ):
     """Save a conversation with proper field handling."""
     try:
+        # Ensure we have a valid user_id
+        if not current_user or not current_user.user_id:
+            return JSONResponse(
+                status_code=401,
+                content={"error": "User not authenticated"}
+            )
+
         conversation_repo = repository_factory.conversation_repository
         
         conv_id = data.get("conversation_id")
@@ -1057,8 +1073,11 @@ async def save_conversation(
         existing = await conversation_repo.find_by_id(conv_id)
         
         if existing:
+            # Get owner_id safely whether it's a dict or model
+            owner_id = existing.get("owner_id") if isinstance(existing, dict) else getattr(existing, "owner_id", None)
+            
             # Check ownership
-            if existing.owner_id != current_user.user_id:
+            if owner_id != current_user.user_id:
                 return JSONResponse(
                     status_code=403,
                     content={"error": "You don't have permission to edit this conversation"}
@@ -1079,16 +1098,16 @@ async def save_conversation(
                 )
         else:
             # Create new conversation
-            # Use the Conversation model directly
-            conversation = Conversation(
-                id=conv_id,
-                owner_id=current_user.user_id,
-                messages=data.get("messages", []),
-                preview=data.get("preview", "New Conversation"),
-                last_updated=data.get("last_updated", datetime.utcnow())
-            )
+            conversation_data = {
+                "id": conv_id,
+                "owner_id": current_user.user_id,
+                "messages": data.get("messages", []),
+                "preview": data.get("preview", "New Conversation"),
+                "last_updated": data.get("last_updated", datetime.utcnow())
+            }
             
-            result = await conversation_repo.create(conversation)
+            # Create new conversation using the repository
+            result = await conversation_repo.create(conversation_data)
             if not result:
                 return JSONResponse(
                     status_code=500,
