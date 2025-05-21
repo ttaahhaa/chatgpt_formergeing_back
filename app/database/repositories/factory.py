@@ -12,6 +12,7 @@ from app.database.repositories.conversation_repository import ConversationReposi
 from app.database.repositories.user_repository import UserRepository
 from app.database.repositories.knowledge_graph_repository import KnowledgeGraphRepository
 from app.database.repositories.log_repository import LogRepository
+from app.database.repositories.user_settings_repository import UserSettingsRepository
 import urllib.parse
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,8 @@ class RepositoryFactory:
             "embedding": EmbeddingRepository,
             "conversation": ConversationRepository,
             "log": LogRepository,
-            "knowledge_graph": KnowledgeGraphRepository
+            "knowledge_graph": KnowledgeGraphRepository,
+            "user_settings": UserSettingsRepository
         }
         
         # Repository instances
@@ -90,6 +92,11 @@ class RepositoryFactory:
     def knowledge_graph_repository(self) -> KnowledgeGraphRepository:
         """Get the knowledge graph repository."""
         return self.get_repository("knowledge_graph")
+    
+    @property
+    def user_settings_repository(self) -> UserSettingsRepository:
+        """Get the user settings repository."""
+        return self.get_repository("user_settings")
     
     async def close(self):
         """Close the MongoDB connection."""

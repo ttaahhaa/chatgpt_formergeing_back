@@ -175,3 +175,21 @@ class KnowledgeGraph(BaseModel):
     edges: List[KnowledgeGraphEdge] = []
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+
+class UserSettings(BaseModel):
+    """User settings model for storing user preferences."""
+    user_id: str  # Reference to user
+    preferred_model: str = "mistral:latest"  # User's preferred LLM model
+    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "user_id": "user_12345",
+                "preferred_model": "mistral:latest",
+                "created_at": "2023-01-01T00:00:00",
+                "updated_at": "2023-01-01T00:00:00"
+            }
+        }
+    )

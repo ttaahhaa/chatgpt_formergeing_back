@@ -130,7 +130,7 @@ app = FastAPI(
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, change to specific origin
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1354,8 +1354,11 @@ async def check_ollama():
 
 # Add endpoint to set LLM model
 @app.post("/api/set_model")
-async def set_model(request: dict):
-    """Set the current LLM model."""
+async def set_model(
+    request: dict,
+    current_user: TokenData = Depends(check_permission("model:change"))
+):
+    """Set the user's preferred LLM model."""
     try:
         if "model" not in request:
             return JSONResponse(
@@ -1364,7 +1367,22 @@ async def set_model(request: dict):
             )
         
         model = request.get("model")
-        app.state.llm_chain.model_name = model
+        
+        # Get user settings repository
+        settings_repo = repository_factory.user_settings_repository
+        
+        # Update or create user settings
+        settings = await settings_repo.find_by_user_id(current_user.user_id)
+        if settings:
+            await settings_repo.update(current_user.user_id, {
+                "preferred_model": model,
+                "updated_at": datetime.utcnow()
+            })
+        else:
+            await settings_repo.create({
+                "user_id": current_user.user_id,
+                "preferred_model": model
+            })
         
         return {"message": f"Model updated to {model}"}
     except (ValueError, AttributeError) as e:
@@ -1382,17 +1400,23 @@ async def set_model(request: dict):
 
 # Add endpoint to get available models
 @app.get("/api/models")
-async def get_models():
-    """Get available LLM models."""
+async def get_models(
+    current_user: TokenData = Depends(check_permission("model:view"))
+):
+    """Get available LLM models and user's preferred model."""
     try:
         # Get available models from Ollama
         ollama_status = app.state.llm_chain.check_ollama_status()
         models = ollama_status.get("models", [])
-        current_model = app.state.llm_chain.model_name
+        
+        # Get user's preferred model
+        settings_repo = repository_factory.user_settings_repository
+        user_settings = await settings_repo.find_by_user_id(current_user.user_id)
+        preferred_model = user_settings.get("preferred_model") if user_settings else "mistral:latest"
         
         return {
             "models": models,
-            "current_model": current_model
+            "current_model": preferred_model
         }
     except (ConnectionError, RuntimeError) as e:
         logger.error("Model service error: %s", str(e))
@@ -1405,6 +1429,37 @@ async def get_models():
         return JSONResponse(
             status_code=500,
             content={"error": f"Invalid model data: {str(e)}"}
+        )
+
+@app.get("/api/user/preferred-model")
+async def get_user_preferred_model(
+    current_user: TokenData = Depends(get_current_user)
+):
+    """Get the current user's preferred model."""
+    try:
+        # Get user settings repository
+        settings_repo = repository_factory.user_settings_repository
+        
+        # Get user's settings
+        user_settings = await settings_repo.find_by_user_id(current_user.user_id)
+        
+        # Return preferred model or default
+        preferred_model = user_settings.get("preferred_model") if user_settings else "mistral:latest"
+        
+        return {
+            "preferred_model": preferred_model
+        }
+    except (ConnectionError, RuntimeError) as e:
+        logger.error("Database operation error: %s", str(e))
+        return JSONResponse(
+            status_code=503,
+            content={"error": f"Database operation error: {str(e)}"}
+        )
+    except (ValueError, AttributeError) as e:
+        logger.error("Invalid user data: %s", str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Invalid user data: {str(e)}"}
         )
 
 # Add endpoint to clear cache

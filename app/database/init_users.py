@@ -42,7 +42,9 @@ ROLES = {
             "chat:edit",
             "chat:delete",
             "settings:view",
-            "settings:edit"
+            "settings:edit",
+            "model:view",
+            "model:change"
         ]
     }
 }
