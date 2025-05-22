@@ -3,9 +3,10 @@ from typing import Optional
 import jwt
 from fastapi import HTTPException, status
 from pydantic import BaseModel
+import os
 
 # JWT Configuration
-SECRET_KEY = "your-secret-key-here"  # In production, use environment variable
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")  # JWT secret key from environment variable
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 

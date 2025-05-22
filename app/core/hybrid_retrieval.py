@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional
 import numpy as np
 from collections import Counter
 
-from ..config import config
+from app.config import config
 from .vector_store_hybrid import get_hybrid_vector_store
 
 logger = logging.getLogger(__name__)

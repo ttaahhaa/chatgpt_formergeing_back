@@ -212,14 +212,17 @@ class HybridVectorStore:
             success = True
             # Delete each document and its embedding
             for doc in documents:
+                # Get document ID safely
+                doc_id = doc.get("id") if isinstance(doc, dict) else doc.id
+                
                 # Delete embedding first (to maintain referential integrity)
-                emb_deleted = await self.embedding_repo.delete_by_document_id(doc.id)
+                emb_deleted = await self.embedding_repo.delete_by_document_id(doc_id)
                 
                 # Delete document
-                doc_deleted = await self.document_repo.delete(doc.id)
+                doc_deleted = await self.document_repo.delete(doc_id)
                 
                 if not doc_deleted:
-                    logger.warning(f"Failed to delete document {doc.id}")
+                    logger.warning(f"Failed to delete document {doc_id}")
                     success = False
             
             # Reset FAISS index
