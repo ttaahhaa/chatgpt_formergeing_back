@@ -5,6 +5,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 import uuid
 from datetime import datetime
+from motor.motor_asyncio import AsyncIOMotorCollection
 
 from app.database.models import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from app.database.config import mongodb_config
@@ -15,12 +16,9 @@ logger = logging.getLogger(__name__)
 class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
     """Repository for knowledge graph operations."""
     
-    def __init__(self):
+    def __init__(self, collection: AsyncIOMotorCollection):
         """Initialize the knowledge graph repository."""
-        super().__init__(
-            collection_name=mongodb_config.knowledge_graph_collection,
-            model_class=KnowledgeGraph
-        )
+        super().__init__(collection=collection)
     
     async def initialize_graph(self, owner_id: Optional[str] = None) -> Optional[str]:
         """
@@ -33,17 +31,23 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
             Graph ID if successful, None otherwise
         """
         try:
+            logger.info(f"Starting knowledge graph initialization for owner_id: {owner_id}")
+            
             # Check if a graph already exists for this owner
             if owner_id:
+                logger.info(f"Checking for existing graph for owner_id: {owner_id}")
                 existing = await self.find({"owner_id": owner_id}, limit=1)
                 if existing:
-                    logger.info(f"Knowledge graph already exists for owner {owner_id}")
-                    return existing[0].id
+                    logger.info(f"Found existing knowledge graph for owner {owner_id} with ID: {existing[0].get('id')}")
+                    return existing[0].get('id')
+                logger.info(f"No existing graph found for owner_id: {owner_id}")
             
             # Generate a unique ID
             graph_id = f"graph_{uuid.uuid4()}"
+            logger.info(f"Generated new graph ID: {graph_id}")
             
             # Create empty graph
+            logger.info("Creating new knowledge graph object")
             graph = KnowledgeGraph(
                 id=graph_id,
                 owner_id=owner_id,
@@ -53,9 +57,22 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
                 updated_at=datetime.utcnow()
             )
             
-            return await self.create(graph)
+            # Create graph in database
+            logger.info(f"Attempting to create graph in database with ID: {graph_id}")
+            logger.debug(f"Graph data: {graph.dict()}")
+            
+            result = await self.create(graph.dict())
+            
+            if result:
+                logger.info(f"Successfully created knowledge graph with ID: {graph_id}")
+                return graph_id
+            else:
+                logger.error(f"Failed to create knowledge graph with ID: {graph_id}")
+                return None
+            
         except Exception as e:
             logger.error(f"Error initializing knowledge graph: {str(e)}")
+            logger.error("Stack trace:", exc_info=True)
             return None
     
     async def get_graph(self, owner_id: Optional[str] = None) -> Optional[KnowledgeGraph]:
@@ -102,7 +119,7 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
             
             # Add node to graph
             result = await self.collection.update_one(
-                {"_id": graph_id},
+                {"id": graph_id},
                 {
                     "$push": {"nodes": node.dict()},
                     "$set": {"updated_at": datetime.utcnow()}
@@ -148,7 +165,7 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
             
             # Add edge to graph
             result = await self.collection.update_one(
-                {"_id": graph_id},
+                {"id": graph_id},
                 {
                     "$push": {"edges": edge.dict()},
                     "$set": {"updated_at": datetime.utcnow()}
@@ -178,7 +195,7 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
         """
         try:
             result = await self.collection.find_one(
-                {"_id": graph_id, "nodes.id": node_id},
+                {"id": graph_id, "nodes.id": node_id},
                 {"nodes.$": 1}
             )
             
@@ -206,7 +223,7 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
         try:
             # This is a simple pattern matching query
             result = await self.collection.find_one(
-                {"_id": graph_id},
+                {"id": graph_id},
                 {"nodes": 1}
             )
             
@@ -239,7 +256,7 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
         """
         try:
             result = await self.collection.find_one(
-                {"_id": graph_id},
+                {"id": graph_id},
                 {"nodes": 1, "edges": 1}
             )
             
@@ -293,7 +310,7 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
         """
         try:
             result = await self.collection.update_one(
-                {"_id": graph_id},
+                {"id": graph_id},
                 {
                     "$set": {
                         "nodes": [],
@@ -325,7 +342,7 @@ class KnowledgeGraphRepository(BaseRepository[KnowledgeGraph]):
         """
         try:
             result = await self.collection.find_one(
-                {"_id": graph_id},
+                {"id": graph_id},
                 {"nodes": 1, "edges": 1}
             )
             

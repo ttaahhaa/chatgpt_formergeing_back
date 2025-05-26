@@ -65,6 +65,7 @@ class Document(BaseModel):
 
 class Embedding(BaseModel):
     """Document embedding model for vector search."""
+    id: str  # Add this field
     document_id: str  # Reference to document
     embedding: List[float]  # Vector embedding
     embedding_model: str = "arabert"  # Model used to generate embedding

@@ -75,8 +75,8 @@ class HybridVectorStore:
             self.document_id_map = []
             
             for emb in embeddings:
-                # Get the embedding vector
-                vector = emb.embedding
+                # Get the embedding vector from dictionary
+                vector = emb["embedding"]
                 
                 # Convert to numpy array if necessary
                 if not isinstance(vector, np.ndarray):
@@ -84,7 +84,7 @@ class HybridVectorStore:
                 
                 # Add to vectors list and document ID map
                 vectors.append(vector)
-                self.document_id_map.append(emb.document_id)
+                self.document_id_map.append(emb["document_id"])
             
             # If we have vectors, create the FAISS index
             if vectors:
@@ -147,12 +147,13 @@ class HybridVectorStore:
                 document_id = existing.id
                 # We'll update the embedding below
             else:
-                # Add document to MongoDB
+                # Add document to MongoDB with our generated ID
                 doc_id = await self.document_repo.create(document)
                 if not doc_id:
                     logger.error("Failed to add document to MongoDB")
                     return False
-                document_id = doc_id
+                # Use our generated ID instead of MongoDB's
+                document_id = document["id"]
             
             # Generate embedding for document content
             content = document.get("content", "")
@@ -163,26 +164,32 @@ class HybridVectorStore:
             try:
                 embedding = self.embeddings_model.get_embeddings(content)
                 
-                # Add embedding to MongoDB
+                # Add embedding to MongoDB with our document ID
                 emb_id = await self.embedding_repo.add_embedding(
-                    document_id=document_id,
+                    document_id=document_id,  # Use our generated ID
                     embedding=embedding[0].tolist() if hasattr(embedding[0], "tolist") else embedding[0],
                     model="arabert"
                 )
                 
                 if not emb_id:
                     logger.warning(f"Failed to add embedding for document {document_id}")
+                    return False
                 
-                # Add to FAISS index
-                await self._update_faiss_index()
+                # Force rebuild FAISS index to ensure consistency
+                success = await self.initialize_faiss_index(force_rebuild=True)
+                if not success:
+                    logger.error("Failed to rebuild FAISS index after adding document")
+                    return False
+                
+                logger.info(f"Added document: {document.get('filename', 'unknown')}")
+                return True
+                
             except Exception as e:
                 logger.error(f"Error generating embedding: {str(e)}")
-                # Don't fail the document addition if embedding fails
-                # Just log the error and continue
-            
-            logger.info(f"Added document: {document.get('filename', 'unknown')}")
-            return True
-            
+                # If embedding fails, we should clean up the document
+                await self.document_repo.delete(document_id)
+                return False
+                
         except Exception as e:
             logger.error(f"Error adding document to MongoDB: {str(e)}")
             return False
@@ -228,6 +235,7 @@ class HybridVectorStore:
             # Reset FAISS index
             self.faiss_index = faiss.IndexFlatIP(768)  # Default dimension for ArabERT
             self.document_id_map = []
+            self.index_initialized = False  # Force reinitialization on next use
             
             # Try to delete cache files
             try:
@@ -275,26 +283,41 @@ class HybridVectorStore:
         """
         try:
             if not query_text:
+                logger.warning("Empty query text provided")
                 return []
+            
+            # Log FAISS index status
+            logger.info(f"FAISS index initialized: {self.index_initialized}")
+            if self.faiss_index:
+                logger.info(f"FAISS index total vectors: {self.faiss_index.ntotal}")
+                logger.info(f"FAISS index dimension: {self.faiss_index.d}")
+            else:
+                logger.warning("FAISS index is None")
             
             # Ensure FAISS index is initialized
             if not self.index_initialized:
+                logger.info("Initializing FAISS index...")
                 await self.initialize_faiss_index()
+                logger.info(f"FAISS index initialization complete. Total vectors: {self.faiss_index.ntotal if self.faiss_index else 0}")
             
             # If index is empty or failed to initialize
             if self.faiss_index is None or self.faiss_index.ntotal == 0:
-                logger.warning("FAISS index is empty, no documents to query")
+                logger.warning("FAISS index is empty or not initialized")
                 return []
             
             # Generate embedding for the query
+            logger.info("Generating query embedding...")
             query_embedding = self.embeddings_model.get_embeddings(query_text)[0]
             query_np = np.array([query_embedding]).astype(np.float32)
+            logger.info(f"Query embedding shape: {query_np.shape}")
             
             # Normalize query vector for cosine similarity
             faiss.normalize_L2(query_np)
             
             # Search in FAISS index
+            logger.info(f"Searching FAISS index with top_k={top_k}")
             scores, indices = self.faiss_index.search(query_np, min(top_k, self.faiss_index.ntotal))
+            logger.info(f"FAISS search results - scores: {scores}, indices: {indices}")
             
             # Flatten results
             scores = scores[0]
@@ -302,26 +325,35 @@ class HybridVectorStore:
             
             # Get document IDs from mapping
             results = []
+            logger.info(f"Document ID map size: {len(self.document_id_map)}")
+            
             for i, idx in enumerate(indices):
                 if idx < 0 or idx >= len(self.document_id_map):
-                    continue  # Invalid index
+                    logger.warning(f"Invalid index {idx} in FAISS results")
+                    continue
                 
                 # Get document ID
                 doc_id = self.document_id_map[idx]
+                logger.info(f"Processing document ID: {doc_id}")
                 
                 # Get document from MongoDB
                 document = await self.document_repo.find_by_id(doc_id)
                 if document:
-                    # Convert to dictionary and add score
-                    doc_dict = document.dict()
+                    logger.info(f"Found document in MongoDB: {doc_id}")
+                    # Document is already a dictionary, just add the score
+                    doc_dict = document.copy()
                     doc_dict["score"] = float(scores[i])
                     results.append(doc_dict)
+                else:
+                    logger.warning(f"Document not found in MongoDB: {doc_id}")
             
             logger.info(f"Query: '{query_text}' returned {len(results)} results")
+            if results:
+                logger.info(f"Top result score: {results[0]['score']}")
             return results
             
         except Exception as e:
-            logger.error(f"Error querying vector store: {str(e)}")
+            logger.error(f"Error querying vector store: {str(e)}", exc_info=True)
             return []
     
     async def get_document_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:

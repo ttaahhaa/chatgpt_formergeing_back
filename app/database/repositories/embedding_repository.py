@@ -6,6 +6,7 @@ import uuid
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from app.database.models import Embedding
 from app.database.config import mongodb_config
@@ -62,15 +63,14 @@ class EmbeddingRepository(BaseRepository):
                 })
                 return existing["_id"]
             
-            # Create new embedding
-            embedding_data = {
-                "id": f"emb_{uuid.uuid4()}",
-                "document_id": document_id,
-                "embedding": embedding,
-                "embedding_model": model
-            }
+            # Create new embedding with all required fields
+            embedding_obj = Embedding(
+                id=f"emb_{uuid.uuid4()}",  # Generate ID here
+                document_id=document_id,
+                embedding=embedding,
+                embedding_model=model
+            )
             
-            embedding_obj = Embedding(**embedding_data)
             return await self.create(embedding_obj)
         except Exception as e:
             logger.error(f"Error adding embedding: {str(e)}")

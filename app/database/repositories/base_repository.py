@@ -2,7 +2,7 @@
 Base repository class providing common database operations.
 """
 import logging
-from typing import List, Dict, Any, Optional, TypeVar, Generic, Type
+from typing import List, Dict, Any, Optional, TypeVar, Generic, Type, Union
 from bson import ObjectId
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorCollection
@@ -22,24 +22,38 @@ class BaseRepository(Generic[T]):
         """Initialize the repository with a MongoDB collection."""
         self.collection = collection
     
-    async def create(self, data: Dict) -> Optional[Dict]:
+    async def create(self, data: Union[Dict, BaseModel]) -> Optional[Dict]:
         """Create a new document."""
         try:
+            logger.info(f"Attempting to create document with data: {data}")
+            
+            # Convert Pydantic model to dict if needed
+            if isinstance(data, BaseModel):
+                data = data.model_dump()
+            
             # Add ID if not present
             if "id" not in data:
                 data["id"] = str(uuid.uuid4())
+                logger.info(f"Generated new ID: {data['id']}")
             
             # Add timestamps
             data["created_at"] = datetime.utcnow()
             data["updated_at"] = datetime.utcnow()
             
             # Insert document
+            logger.info(f"Inserting document into collection: {self.collection.name}")
             result = await self.collection.insert_one(data)
+            
             if result.inserted_id:
+                logger.info(f"Successfully created document with ID: {data['id']}")
                 return data
+            
+            logger.error("Document creation failed - no inserted_id returned")
             return None
+            
         except Exception as e:
-            print(f"Error creating document: {str(e)}")
+            logger.error(f"Error creating document: {str(e)}")
+            logger.error("Stack trace:", exc_info=True)
             return None
     
     async def find_by_id(self, id: str) -> Optional[Dict]:
@@ -104,3 +118,13 @@ class BaseRepository(Generic[T]):
         except Exception as e:
             print(f"Error counting documents: {str(e)}")
             return 0
+    
+    async def delete_all(self) -> bool:
+        """Delete all documents from the collection."""
+        try:
+            result = await self.collection.delete_many({})
+            logger.info(f"Deleted {result.deleted_count} documents from collection")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting all documents: {str(e)}")
+            return False

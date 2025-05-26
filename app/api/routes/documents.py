@@ -344,21 +344,61 @@ async def clear_documents(
 @router.post("/clear_all_documents")
 async def clear_all_documents(
     current_user: TokenData = Depends(check_permission("admin:manage")),
-    vector_store = Depends(get_vector_store)
+    vector_store = Depends(get_vector_store),
+    document_repo = Depends(get_document_repo),
+    embedding_repo = Depends(get_embedding_repo)
 ):
     """Clear all documents from the system. Admin only."""
     try:
-        # Use the vector store's clear method
-        success = await vector_store.async_store.clear()
+        logger.info(f"Admin {current_user.user_id} initiating full system clear")
         
-        if success:
-            logger.info("Admin %s cleared all documents from the system", current_user.user_id)
-            return {"message": "Successfully cleared all documents"}
-        else:
+        # First, get count of documents and embeddings
+        doc_count = await document_repo.count({})
+        emb_count = await embedding_repo.count({})
+        logger.info(f"Found {doc_count} documents and {emb_count} embeddings to clear")
+        
+        # Clear MongoDB collections
+        logger.info("Clearing MongoDB collections...")
+        doc_cleared = await document_repo.delete_all()
+        emb_cleared = await embedding_repo.delete_all()
+        
+        if not doc_cleared or not emb_cleared:
+            logger.error("Failed to clear MongoDB collections")
             return JSONResponse(
                 status_code=500,
-                content={"error": "Failed to clear documents"}
+                content={"error": "Failed to clear MongoDB collections"}
             )
+        
+        # Clear vector store (FAISS index and cache)
+        logger.info("Clearing vector store...")
+        success = await vector_store.async_store.clear()
+        
+        if not success:
+            logger.error("Failed to clear vector store")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to clear vector store"}
+            )
+        
+        # Verify cleanup
+        final_doc_count = await document_repo.count({})
+        final_emb_count = await embedding_repo.count({})
+        
+        if final_doc_count > 0 or final_emb_count > 0:
+            logger.warning(f"Cleanup verification failed: {final_doc_count} documents and {final_emb_count} embeddings remain")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Cleanup verification failed"}
+            )
+        
+        logger.info(f"Admin {current_user.user_id} successfully cleared all documents from the system")
+        return {
+            "message": "Successfully cleared all documents",
+            "details": {
+                "documents_cleared": doc_count,
+                "embeddings_cleared": emb_count
+            }
+        }
     
     except (ConnectionError, RuntimeError) as e:
         logger.error("Database operation error: %s", str(e))

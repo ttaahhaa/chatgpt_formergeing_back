@@ -3,10 +3,11 @@ Admin routes: clear operations, index rebuilding, and knowledge graph management
 """
 import logging
 import re
-from typing import List
+from typing import List, Optional
 from collections import Counter
 from fastapi import APIRouter, Form, Depends
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.api.dependencies import (
     get_current_user, check_permission, get_vector_store,
@@ -14,10 +15,14 @@ from app.api.dependencies import (
 )
 from app.database.repositories.factory import repository_factory
 from app.utils.jwt_utils import TokenData
+from app.utils.text_processing import extract_sample_keywords
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["admin"])
+
+class KnowledgeGraphBuildRequest(BaseModel):
+    user_id: Optional[str] = None
 
 @router.post("/clear_documents")
 async def clear_documents(vector_store = Depends(get_vector_store)):
@@ -107,76 +112,117 @@ async def rebuild_faiss_index(vector_store = Depends(get_vector_store)):
 
 @router.post("/knowledge_graph/build")
 async def build_knowledge_graph(
-    user_id: str = Form(None),
+    request: KnowledgeGraphBuildRequest,
     document_repo = Depends(get_document_repo)
 ):
     """Build or rebuild the knowledge graph from documents."""
     try:
+        logger.info("Starting knowledge graph build process")
+        logger.info(f"Request user_id: {request.user_id}")
+        
         # Get knowledge graph repository
+        logger.info("Getting knowledge graph repository")
         kg_repo = repository_factory.knowledge_graph_repository
+        if not kg_repo:
+            logger.error("Failed to get knowledge graph repository")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to get knowledge graph repository"}
+            )
         
         # Initialize or get existing graph
-        graph_id = await kg_repo.initialize_graph(owner_id=user_id)
+        logger.info("Initializing knowledge graph")
+        graph_id = await kg_repo.initialize_graph(owner_id=request.user_id)
         if not graph_id:
+            logger.error("Failed to initialize knowledge graph")
             return JSONResponse(
                 status_code=500,
                 content={"error": "Failed to initialize knowledge graph"}
             )
+        logger.info(f"Graph initialized with ID: {graph_id}")
         
         # Clear existing graph data
+        logger.info("Clearing existing graph data")
         await kg_repo.clear_graph(graph_id)
         
         # Get documents to process
-        if user_id:
-            documents = await document_repo.find_accessible(user_id)
+        logger.info("Fetching documents to process")
+        if request.user_id:
+            documents = await document_repo.find_accessible(request.user_id)
         else:
             documents = await document_repo.find({})
+        logger.info(f"Found {len(documents)} documents to process")
         
         # Process documents to build the graph
         node_count = 0
         edge_count = 0
         
         for doc in documents:
-            # Add document as a node
-            doc_node_id = await kg_repo.add_node(
-                graph_id=graph_id,
-                label=doc.filename,
-                node_type="document",
-                properties={"id": doc.id, "type": doc.metadata.get("type", "unknown")}
-            )
-            
-            if doc_node_id:
-                node_count += 1
+            logger.info(f"Processing document: {doc.get('filename', 'Unknown')}")
+            try:
+                # Add document as a node
+                doc_node_id = await kg_repo.add_node(
+                    graph_id=graph_id,
+                    label=doc.get('filename', 'Unknown'),
+                    node_type="document",
+                    properties={
+                        "id": doc.get('id'),
+                        "type": doc.get('metadata', {}).get('type', 'unknown')
+                    }
+                )
                 
-                # Process document content
-                keywords = extract_sample_keywords(doc.content)
-                
-                for keyword in keywords:
-                    # Add keyword as a node
-                    keyword_node_id = await kg_repo.add_node(
-                        graph_id=graph_id,
-                        label=keyword,
-                        node_type="keyword"
-                    )
+                if doc_node_id:
+                    node_count += 1
+                    logger.info(f"Added document node: {doc_node_id}")
                     
-                    if keyword_node_id:
-                        node_count += 1
+                    # Process document content
+                    content = doc.get('content', '')
+                    if not content:
+                        logger.warning(f"No content found for document: {doc.get('filename', 'Unknown')}")
+                        continue
                         
-                        # Add relationship between document and keyword
-                        edge_id = await kg_repo.add_edge(
-                            graph_id=graph_id,
-                            source_id=doc_node_id,
-                            target_id=keyword_node_id,
-                            relation="contains"
-                        )
-                        
-                        if edge_id:
-                            edge_count += 1
+                    logger.info(f"Extracting keywords from document: {doc.get('filename', 'Unknown')}")
+                    logger.debug(f"Document content length: {len(content)}")
+                    
+                    keywords = extract_sample_keywords(content)
+                    logger.info(f"Extracted {len(keywords)} keywords: {keywords}")
+                    
+                    for keyword in keywords:
+                        try:
+                            # Add keyword as a node
+                            keyword_node_id = await kg_repo.add_node(
+                                graph_id=graph_id,
+                                label=keyword,
+                                node_type="keyword"
+                            )
+                            
+                            if keyword_node_id:
+                                node_count += 1
+                                logger.info(f"Added keyword node: {keyword_node_id}")
+                                
+                                # Add relationship between document and keyword
+                                edge_id = await kg_repo.add_edge(
+                                    graph_id=graph_id,
+                                    source_id=doc_node_id,
+                                    target_id=keyword_node_id,
+                                    relation="contains"
+                                )
+                                
+                                if edge_id:
+                                    edge_count += 1
+                                    logger.info(f"Added edge: {edge_id}")
+                        except Exception as e:
+                            logger.error(f"Error processing keyword '{keyword}': {str(e)}")
+                            continue
+            except Exception as e:
+                logger.error(f"Error processing document {doc.get('filename', 'Unknown')}: {str(e)}")
+                continue
         
         # Get final graph stats
+        logger.info("Getting final graph statistics")
         stats = await kg_repo.get_graph_stats(graph_id)
         
-        logger.info("Knowledge graph built with %d nodes and %d edges", stats.get('nodes', 0), stats.get('edges', 0))
+        logger.info(f"Knowledge graph built successfully with {stats.get('nodes', 0)} nodes and {stats.get('edges', 0)} edges")
         
         return {
             "message": "Knowledge graph built successfully",
@@ -185,16 +231,25 @@ async def build_knowledge_graph(
         }
     
     except (ValueError, AttributeError) as e:
-        logger.error("Invalid graph data: %s", str(e))
+        logger.error(f"Invalid graph data: {str(e)}")
+        logger.error("Stack trace:", exc_info=True)
         return JSONResponse(
             status_code=400,
             content={"error": f"Invalid graph data: {str(e)}"}
         )
     except (ConnectionError, RuntimeError) as e:
-        logger.error("Database operation error: %s", str(e))
+        logger.error(f"Database operation error: {str(e)}")
+        logger.error("Stack trace:", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"error": f"Database operation error: {str(e)}"}
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in build_knowledge_graph: {str(e)}")
+        logger.error("Stack trace:", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Unexpected error: {str(e)}"}
         )
 
 @router.get("/knowledge_graph/stats")
@@ -230,23 +285,3 @@ async def get_knowledge_graph_stats(user_id: str = Form(None)):
             status_code=500,
             content={"error": f"Database operation error: {str(e)}"}
         )
-
-# Helper function for keyword extraction (simplified)
-def extract_sample_keywords(text: str, max_keywords: int = 5) -> List[str]:
-    """Extract sample keywords from text (simplified)."""
-    # This is just a simple implementation for demonstration
-    # In a real system, use proper NLP techniques
-    words = text.lower().split()
-    word_freq = {}
-    
-    for word in words:
-        # Skip short words and common stop words
-        if len(word) <= 3 or word in ["the", "and", "for", "with", "that", "this"]:
-            continue
-        word_freq[word] = word_freq.get(word, 0) + 1
-    
-    # Sort by frequency
-    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-    
-    # Return top keywords
-    return [word for word, _ in sorted_words[:max_keywords]]

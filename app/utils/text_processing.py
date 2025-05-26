@@ -141,3 +141,31 @@ def format_sources(sources: Set[str]) -> str:
         return ""
     
     return "\n\nSources: " + ", ".join(sorted(sources))
+
+def extract_sample_keywords(text: str, max_keywords: int = 5) -> List[str]:
+    """
+    Extract sample keywords from text (simplified).
+    
+    Args:
+        text: Text to extract keywords from
+        max_keywords: Maximum number of keywords to return
+        
+    Returns:
+        List of extracted keywords
+    """
+    # This is just a simple implementation for demonstration
+    # In a real system, use proper NLP techniques
+    words = text.lower().split()
+    word_freq = {}
+    
+    for word in words:
+        # Skip short words and common stop words
+        if len(word) <= 3 or word in ["the", "and", "for", "with", "that", "this"]:
+            continue
+        word_freq[word] = word_freq.get(word, 0) + 1
+    
+    # Sort by frequency
+    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
+    
+    # Return top keywords
+    return [word for word, _ in sorted_words[:max_keywords]]
